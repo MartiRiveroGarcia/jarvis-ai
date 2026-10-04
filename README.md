@@ -17,6 +17,15 @@ alongside the Microsoft AI-103 certification.
 There are no user-facing features yet. This sprint establishes the repository
 structure, a FastAPI backend, a React frontend and the communication between them.
 
+- [x] Repository basics (gitignore, license, README)
+- [x] FastAPI backend with environment-based settings and `GET /api/health`
+- [ ] React + Vite + TypeScript frontend showing the backend connection status
+
+## Local development
+
+- Backend: see [backend/README.md](backend/README.md).
+- Frontend: not available yet.
+
 ## Tech stack
 
 | Area     | Technology                                              |
