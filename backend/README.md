@@ -69,7 +69,7 @@ app/
 ├── main.py           # create_app() factory: builds the app and registers routers
 ├── config/           # environment-based settings
 ├── controllers/      # FastAPI routers (HTTP layer)
-└── models/           # Pydantic schemas
+└── schemas/          # Pydantic schemas (API contracts)
 tests/                # pytest suite
 ```
 
