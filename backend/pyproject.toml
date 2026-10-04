@@ -20,3 +20,8 @@ select = [
     "B",   # flake8-bugbear
     "SIM", # flake8-simplify
 ]
+
+[tool.ruff.lint.isort]
+# The local alembic/ migrations folder would otherwise make Ruff treat the
+# installed alembic package as first-party.
+known-third-party = ["alembic"]
