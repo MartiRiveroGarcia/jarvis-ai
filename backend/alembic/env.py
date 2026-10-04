@@ -1,13 +1,17 @@
 """Alembic migration environment for the Jarvis backend."""
 
 from logging.config import fileConfig
+from typing import Any, Literal
 
 from alembic import context
+from alembic.autogenerate.api import AutogenContext
 from sqlalchemy import Connection, create_engine
 from sqlalchemy.pool import NullPool
 
+from app import models  # noqa: F401  (registers all models on Base.metadata)
 from app.config.settings import get_settings
 from app.database.base import Base
+from app.database.types import UTCDateTime
 
 config = context.config
 
@@ -24,10 +28,19 @@ def get_database_url() -> str:
     return config.attributes.get("database_url") or get_settings().database_url
 
 
+def render_item(type_: str, obj: Any, autogen_context: AutogenContext) -> str | Literal[False]:
+    # Render application column types as their portable SQLAlchemy equivalent so
+    # migrations never import application code (which keeps changing over time).
+    if type_ == "type" and isinstance(obj, UTCDateTime):
+        return "sa.DateTime(timezone=True)"
+    return False
+
+
 def configure_context(connection: Connection) -> None:
     context.configure(
         connection=connection,
         target_metadata=target_metadata,
+        render_item=render_item,
         # SQLite cannot ALTER most table properties; batch mode recreates the table.
         render_as_batch=connection.dialect.name == "sqlite",
     )
@@ -39,6 +52,7 @@ def run_migrations_offline() -> None:
     context.configure(
         url=url,
         target_metadata=target_metadata,
+        render_item=render_item,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         render_as_batch=url.startswith("sqlite"),

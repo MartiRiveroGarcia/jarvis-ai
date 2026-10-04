@@ -105,7 +105,8 @@ app/
 ├── main.py           # create_app() factory: builds the app and registers routers
 ├── config/           # environment-based settings
 ├── controllers/      # FastAPI routers (HTTP layer)
-├── database/         # SQLAlchemy base, engine, session factory, get_db dependency
+├── database/         # SQLAlchemy base, engine, session factory, get_db, UTC datetime type
+├── models/           # SQLAlchemy ORM models (database tables)
 └── schemas/          # Pydantic schemas (API contracts)
 alembic/              # database migrations (env.py reads DATABASE_URL via Settings)
 tests/                # pytest suite
