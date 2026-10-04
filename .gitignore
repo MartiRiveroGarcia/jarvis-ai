@@ -3,6 +3,12 @@
 .env.*
 !.env.example
 
+# --- Keys & certificates ---
+*.pem
+*.key
+*.pfx
+*.p12
+
 # --- Python ---
 __pycache__/
 *.py[cod]
