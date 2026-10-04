@@ -9,6 +9,14 @@
 *.pfx
 *.p12
 
+# --- Local databases ---
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
 # --- Python ---
 __pycache__/
 *.py[cod]

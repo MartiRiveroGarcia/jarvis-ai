@@ -54,13 +54,24 @@ ruff format .         # format
 Settings are read from environment variables prefixed with `JARVIS_`, or from
 `backend/.env`. Real environment variables take precedence over the `.env` file.
 
-| Variable             | Default       | Description                                    |
-| -------------------- | ------------- | ---------------------------------------------- |
-| `JARVIS_APP_NAME`    | `Jarvis API`  | Name shown in the API docs and health response |
-| `JARVIS_ENVIRONMENT` | `development` | One of `development`, `test`, `production`     |
+| Variable             | Default                         | Description                                    |
+| -------------------- | ------------------------------- | ---------------------------------------------- |
+| `JARVIS_APP_NAME`    | `Jarvis API`                    | Name shown in the API docs and health response |
+| `JARVIS_ENVIRONMENT` | `development`                   | One of `development`, `test`, `production`     |
+| `DATABASE_URL`       | `sqlite:///<backend>/jarvis.db` | SQLAlchemy database URL (no `JARVIS_` prefix)  |
 
 `.env` is ignored by Git. Never commit secrets; add new variables to `.env.example`
 with a placeholder value instead.
+
+### Database URL
+
+Locally, Jarvis uses a SQLite file at `backend/jarvis.db` (ignored by Git). The
+design stays compatible with PostgreSQL, which only requires a different URL, e.g.
+`postgresql+psycopg://<user>:<password>@<host>:5432/jarvis`.
+
+A PostgreSQL `DATABASE_URL` contains credentials, so treat it as a secret: it is
+validated at startup, excluded from the settings `repr`, never returned by the API
+and must not be logged.
 
 ## Structure
 
