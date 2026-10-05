@@ -33,11 +33,20 @@ class ApiClient {
   Future<JsonObject?> get(String path, {bool authenticated = false}) =>
       _send('GET', path, authenticated: authenticated);
 
+  /// [bearerToken] sends that token instead of the stored one. It exists for one
+  /// case: revoking a freshly issued session that could not be stored.
   Future<JsonObject?> post(
     String path, {
     JsonObject? body,
     bool authenticated = false,
-  }) => _send('POST', path, body: body, authenticated: authenticated);
+    String? bearerToken,
+  }) => _send(
+    'POST',
+    path,
+    body: body,
+    authenticated: authenticated,
+    bearerToken: bearerToken,
+  );
 
   /// Joins a validated [path] onto the base URL, preserving the base path.
   ///
@@ -77,13 +86,16 @@ class ApiClient {
     String path, {
     required bool authenticated,
     JsonObject? body,
+    String? bearerToken,
   }) async {
     final url = resolve(path);
     final headers = <String, String>{'Accept': 'application/json'};
     if (body != null) {
       headers['Content-Type'] = 'application/json';
     }
-    if (authenticated) {
+    if (bearerToken != null) {
+      headers['Authorization'] = 'Bearer $bearerToken';
+    } else if (authenticated) {
       final session = await _tokenStore.read();
       if (session == null) {
         throw UnauthorizedException(

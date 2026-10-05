@@ -3,8 +3,8 @@
 Native Flutter client for Jarvis, a voice-first personal AI assistant. Android-first;
 shared code is kept portable so iOS can be added later.
 
-**Status:** Sprint 01 in progress. The API client, configuration and secure token
-storage exist; authentication screens and the assistant home screen are being added.
+**Status:** Sprint 01 in progress. Registration, login, session restore and logout work
+against the backend; the assistant home screen is still a placeholder.
 
 ## Requirements
 
@@ -41,6 +41,25 @@ localhost: `uvicorn app.main:app --host 0.0.0.0 --port 8000`.
 - **`API_BASE_URL` is configuration, not a secret.** Anything passed with
   `--dart-define` is compiled into the app and can be extracted from it. Never pass
   credentials or keys this way.
+
+## Authentication flow
+
+State lives in `AuthController` (Riverpod) as an explicit `AuthState`:
+`initializing`, `unauthenticated`, `authenticated(user)`, `restoreFailed` and
+`signOutFailed`. A single `GoRouter` follows it: restoring and failure states stay on
+`/splash` (with Retry), signed-out users see `/login` or `/register`, signed-in users
+see `/` or `/settings`.
+
+- **Startup:** no stored session → login. A locally expired session is removed without
+  a network call. Otherwise `GET /api/auth/me` decides: 401 removes the session; a
+  network or server error shows Retry and keeps the session (offline is not logged out).
+- **Login:** the session is written to secure storage *before* the app treats you as
+  signed in. If storage fails, the new server session is revoked best-effort.
+- **Register:** creates the account, then logs in automatically. If that automatic login
+  fails, the app returns to Login with the email filled in.
+- **Logout:** best-effort server logout, then the local session is always removed.
+- **Invariant:** "signed out" means no session is stored on the device. If removing it
+  fails, the app stays on a blocking Retry screen instead.
 
 ## Security notes
 
