@@ -54,6 +54,15 @@ def db_session(database_url: str) -> Iterator[Session]:
 
 
 @pytest.fixture
+def transaction_spy(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Record any commit()/rollback() on db_session; repositories must cause none."""
+    calls: list[str] = []
+    monkeypatch.setattr(db_session, "commit", lambda: calls.append("commit"))
+    monkeypatch.setattr(db_session, "rollback", lambda: calls.append("rollback"))
+    return calls
+
+
+@pytest.fixture
 def test_settings() -> Settings:
     # _env_file=None keeps a developer's local .env from leaking into tests.
     return Settings(_env_file=None, app_name="Jarvis API (test)", environment="test")

@@ -118,11 +118,12 @@ app/
 ├── controllers/      # FastAPI routers (HTTP layer)
 ├── database/         # SQLAlchemy base, engine, session factory, get_db, UTC datetime type
 ├── models/           # SQLAlchemy ORM models (database tables)
+├── repositories/     # persistence queries; flush only, never commit
 ├── schemas/          # Pydantic schemas (API contracts)
 └── security/         # password hashing and session token utilities
 alembic/              # database migrations (env.py reads DATABASE_URL via Settings)
 tests/                # pytest suite
 ```
 
-Further layers (`services/`, `integrations/`, `repositories/`) will be added in later
-sprints, when there is real logic to put in them.
+Further layers (`services/`, `integrations/`) will be added when there is real logic
+to put in them.
