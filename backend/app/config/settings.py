@@ -1,3 +1,4 @@
+from datetime import timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -32,6 +33,11 @@ class Settings(BaseSettings):
     app_name: str = "Jarvis API"
     environment: Environment = "development"
 
+    # Fixed session lifetime (no sliding renewal); also used for the cookie Max-Age.
+    session_ttl_days: int = Field(default=7, ge=1, le=90)
+    # Allow public sign-up. Create your own account, then disable it in production.
+    registration_enabled: bool = True
+
     # May contain credentials (e.g. PostgreSQL), so it is excluded from repr.
     database_url: str = Field(
         default=f"sqlite:///{BACKEND_DIR / 'jarvis.db'}",
@@ -48,6 +54,10 @@ class Settings(BaseSettings):
             # Do not echo the value: it may contain a password.
             raise ValueError("DATABASE_URL is not a valid SQLAlchemy database URL") from None
         return value
+
+    @property
+    def session_ttl(self) -> timedelta:
+        return timedelta(days=self.session_ttl_days)
 
 
 @lru_cache

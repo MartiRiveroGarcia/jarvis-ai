@@ -131,3 +131,15 @@ def test_importing_and_serving_the_app_does_not_touch_the_database(tmp_path: Pat
     subprocess.run([sys.executable, "-c", script], cwd=BACKEND_DIR, env=env, check=True)
 
     assert not db_file.exists()
+
+
+def test_engine_hides_parameters_in_errors(tmp_path: Path) -> None:
+    engine = create_db_engine(f"sqlite:///{tmp_path / 'hidden.db'}")
+    with engine.begin() as connection:
+        connection.exec_driver_sql("CREATE TABLE secrets (value TEXT UNIQUE)")
+        connection.exec_driver_sql("INSERT INTO secrets (value) VALUES ('s3cret-hash')")
+
+    with pytest.raises(IntegrityError) as exc_info, engine.begin() as connection:
+        connection.execute(text("INSERT INTO secrets (value) VALUES (:v)"), {"v": "s3cret-hash"})
+
+    assert "s3cret-hash" not in str(exc_info.value)

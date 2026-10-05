@@ -14,7 +14,9 @@ def create_db_engine(database_url: str) -> Engine:
 
     Creating an engine does not open a connection; that happens on first use.
     """
-    engine = create_engine(database_url)
+    # hide_parameters keeps bound values (e.g. password or token hashes) out of
+    # SQLAlchemy error messages and logs.
+    engine = create_engine(database_url, hide_parameters=True)
     if engine.dialect.name == "sqlite":
         event.listen(engine, "connect", _enable_sqlite_foreign_keys)
     return engine

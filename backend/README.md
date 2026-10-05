@@ -55,11 +55,13 @@ ruff format .         # format
 Settings are read from environment variables prefixed with `JARVIS_`, or from
 `backend/.env`. Real environment variables take precedence over the `.env` file.
 
-| Variable             | Default                         | Description                                    |
-| -------------------- | ------------------------------- | ---------------------------------------------- |
-| `JARVIS_APP_NAME`    | `Jarvis API`                    | Name shown in the API docs and health response |
-| `JARVIS_ENVIRONMENT` | `development`                   | One of `development`, `test`, `production`     |
-| `DATABASE_URL`       | `sqlite:///<backend>/jarvis.db` | SQLAlchemy database URL (no `JARVIS_` prefix)  |
+| Variable                      | Default                         | Description                                                             |
+| ----------------------------- | ------------------------------- | ----------------------------------------------------------------------- |
+| `JARVIS_APP_NAME`             | `Jarvis API`                    | Name shown in the API docs and health response                          |
+| `JARVIS_ENVIRONMENT`          | `development`                   | One of `development`, `test`, `production`                              |
+| `JARVIS_SESSION_TTL_DAYS`     | `7`                             | Login session lifetime in days (1–90), not extended by activity         |
+| `JARVIS_REGISTRATION_ENABLED` | `true`                          | Allow public sign-up; disable in production after creating your account |
+| `DATABASE_URL`                | `sqlite:///<backend>/jarvis.db` | SQLAlchemy database URL (no `JARVIS_` prefix)                           |
 
 `.env` is ignored by Git. Never commit secrets; add new variables to `.env.example`
 with a placeholder value instead.
@@ -104,6 +106,9 @@ migrations behave the same on SQLite and PostgreSQL.
   the RFC 9106 low-memory profile: `memory_cost=65536` KiB (64 MiB), `time_cost=3`,
   `parallelism=4`. Plaintext passwords are never stored.
 - Session tokens are 256-bit random values; only their SHA-256 hash is stored.
+- Password policy (`app/security/password_policy.py`): 15–128 characters, spaces and
+  Unicode allowed, no composition rules, never truncated. Enforced by the service
+  layer itself, so no caller can bypass it.
 - **Before deploying**, benchmark these Argon2 parameters on the real production host
   and adjust them if hashing is too slow or too fast for that hardware. Changing them
   requires regenerating the dummy hash in `app/security/passwords.py` (a test enforces
@@ -120,10 +125,10 @@ app/
 ├── models/           # SQLAlchemy ORM models (database tables)
 ├── repositories/     # persistence queries; flush only, never commit
 ├── schemas/          # Pydantic schemas (API contracts)
-└── security/         # password hashing and session token utilities
+├── security/         # password hashing, password policy, session token utilities
+└── services/         # use cases (AuthService); own commit/rollback
 alembic/              # database migrations (env.py reads DATABASE_URL via Settings)
 tests/                # pytest suite
 ```
 
-Further layers (`services/`, `integrations/`) will be added when there is real logic
-to put in them.
+Further layers (`integrations/`) will be added when there is real logic to put in them.

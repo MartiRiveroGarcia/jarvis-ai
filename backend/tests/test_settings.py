@@ -1,3 +1,4 @@
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,8 @@ def clear_settings_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (
         "JARVIS_APP_NAME",
         "JARVIS_ENVIRONMENT",
+        "JARVIS_SESSION_TTL_DAYS",
+        "JARVIS_REGISTRATION_ENABLED",
         "DATABASE_URL",
         "JARVIS_DATABASE_URL",
     ):
@@ -96,3 +99,35 @@ def test_database_url_is_excluded_from_repr() -> None:
     )
 
     assert "s3cret-password" not in repr(settings)
+
+
+def test_session_ttl_defaults_to_seven_days() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.session_ttl_days == 7
+    assert settings.session_ttl == timedelta(days=7)
+
+
+def test_session_ttl_can_be_overridden(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("JARVIS_SESSION_TTL_DAYS", "30")
+
+    assert Settings(_env_file=None).session_ttl == timedelta(days=30)
+
+
+@pytest.mark.parametrize("days", ["0", "-1", "91", "seven"])
+def test_invalid_session_ttl_is_rejected(monkeypatch: pytest.MonkeyPatch, days: str) -> None:
+    monkeypatch.setenv("JARVIS_SESSION_TTL_DAYS", days)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_registration_is_enabled_by_default() -> None:
+    assert Settings(_env_file=None).registration_enabled is True
+
+
+@pytest.mark.parametrize("value", ["false", "0", "False"])
+def test_registration_can_be_disabled(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    monkeypatch.setenv("JARVIS_REGISTRATION_ENABLED", value)
+
+    assert Settings(_env_file=None).registration_enabled is False
