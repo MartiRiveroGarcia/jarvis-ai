@@ -1,12 +1,19 @@
 import 'package:flutter/material.dart';
 
+import 'core/config/app_config.dart';
+
 void main() {
-  runApp(const JarvisApp());
+  // Validate configuration before anything else: an invalid API_BASE_URL
+  // (or plain HTTP outside debug builds) stops the app at startup.
+  final config = AppConfig.fromEnvironment();
+  runApp(JarvisApp(config: config));
 }
 
 /// Root widget. A placeholder until routing, theming and authentication are added.
 class JarvisApp extends StatelessWidget {
-  const JarvisApp({super.key});
+  const JarvisApp({super.key, required this.config});
+
+  final AppConfig config;
 
   @override
   Widget build(BuildContext context) {

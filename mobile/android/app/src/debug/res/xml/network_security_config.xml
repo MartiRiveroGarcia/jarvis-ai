@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds only: allow plain HTTP for local development, both from the
+     emulator (http://10.0.2.2:8000) and from a physical phone on the local network
+     (for example http://192.168.1.20:8000). LAN addresses vary, and network security
+     config cannot express IP ranges, so cleartext is allowed for any host here.
+     Never copy this into src/main. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>
