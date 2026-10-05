@@ -39,7 +39,7 @@ Clock = Callable[[], datetime]
 class LoginResult:
     """Outcome of a successful login.
 
-    session_token is the raw token for the HttpOnly cookie. It is a SecretStr so it
+    session_token is the raw token for the client's Bearer credential. It is a SecretStr so it
     is masked in repr, str and logs; it is never persisted.
     """
 

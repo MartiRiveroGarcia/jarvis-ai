@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     app_name: str = "Jarvis API"
     environment: Environment = "development"
 
-    # Fixed session lifetime (no sliding renewal); also used for the cookie Max-Age.
+    # Fixed session lifetime (no sliding renewal).
     session_ttl_days: int = Field(default=7, ge=1, le=90)
     # Allow public sign-up. Create your own account, then disable it in production.
     registration_enabled: bool = True
