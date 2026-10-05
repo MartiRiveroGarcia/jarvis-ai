@@ -98,6 +98,17 @@ while migrations run with them off and use batch mode, as Alembic recommends for
 SQLite table recreation. Constraint names follow a fixed naming convention so
 migrations behave the same on SQLite and PostgreSQL.
 
+## Security notes
+
+- Passwords are hashed with **Argon2id** (`argon2-cffi`), using parameters pinned to
+  the RFC 9106 low-memory profile: `memory_cost=65536` KiB (64 MiB), `time_cost=3`,
+  `parallelism=4`. Plaintext passwords are never stored.
+- Session tokens are 256-bit random values; only their SHA-256 hash is stored.
+- **Before deploying**, benchmark these Argon2 parameters on the real production host
+  and adjust them if hashing is too slow or too fast for that hardware. Changing them
+  requires regenerating the dummy hash in `app/security/passwords.py` (a test enforces
+  this); existing hashes keep working and are upgraded on the next successful login.
+
 ## Structure
 
 ```text
@@ -107,7 +118,8 @@ app/
 ├── controllers/      # FastAPI routers (HTTP layer)
 ├── database/         # SQLAlchemy base, engine, session factory, get_db, UTC datetime type
 ├── models/           # SQLAlchemy ORM models (database tables)
-└── schemas/          # Pydantic schemas (API contracts)
+├── schemas/          # Pydantic schemas (API contracts)
+└── security/         # password hashing and session token utilities
 alembic/              # database migrations (env.py reads DATABASE_URL via Settings)
 tests/                # pytest suite
 ```
