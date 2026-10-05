@@ -8,6 +8,10 @@ passwords are never truncated.
 MIN_PASSWORD_LENGTH = 15
 MAX_PASSWORD_LENGTH = 128
 
+# Upper bound for login input only. Deliberately larger than MAX_PASSWORD_LENGTH so a
+# future tighter policy never locks out existing accounts; it just caps request size.
+MAX_LOGIN_PASSWORD_LENGTH = 1024
+
 
 def password_meets_policy(password: str) -> bool:
     """Return True if the password length (in Unicode code points) is within bounds."""

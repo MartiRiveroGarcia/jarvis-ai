@@ -12,6 +12,10 @@ if TYPE_CHECKING:
     from app.models.auth_session import AuthSession
 
 
+# RFC 5321 practical limit; shared by the database column and the API schema.
+EMAIL_MAX_LENGTH = 254
+
+
 def normalize_email(email: str) -> str:
     """Canonical form used for storage, uniqueness and lookups."""
     return email.strip().lower()
@@ -21,7 +25,7 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    email: Mapped[str] = mapped_column(String(254), unique=True)
+    email: Mapped[str] = mapped_column(String(EMAIL_MAX_LENGTH), unique=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     is_active: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utc_now)

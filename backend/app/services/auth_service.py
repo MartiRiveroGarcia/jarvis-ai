@@ -18,7 +18,11 @@ from app.security.passwords import (
     verify_dummy_password,
     verify_password,
 )
-from app.security.session_tokens import generate_session_token, hash_session_token
+from app.security.session_tokens import (
+    generate_session_token,
+    hash_session_token,
+    is_well_formed_session_token,
+)
 from app.services.auth_errors import (
     AccountDisabledError,
     EmailAlreadyRegisteredError,
@@ -112,6 +116,8 @@ class AuthService:
 
     def authenticate(self, raw_token: str) -> User:
         """Return the user owning a valid session, revoking expired or disabled ones."""
+        if not is_well_formed_session_token(raw_token):
+            raise InvalidSessionError  # rejected without any database work
         now = self._clock()
         auth_session = self._sessions.get_by_token_hash(hash_session_token(raw_token))
         if auth_session is None:
@@ -129,6 +135,8 @@ class AuthService:
 
     def logout(self, raw_token: str) -> None:
         """Revoke the session for this token. Idempotent: unknown tokens are fine."""
+        if not is_well_formed_session_token(raw_token):
+            return  # cannot be one of our sessions; nothing to revoke
         with self._transaction():
             self._sessions.delete_by_token_hash(hash_session_token(raw_token))
 

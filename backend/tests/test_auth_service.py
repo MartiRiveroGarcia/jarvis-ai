@@ -505,3 +505,17 @@ def test_failed_commit_rolls_back_the_whole_login(
 
     assert calls == ["commit", "rollback"]
     assert _count(db_session, AuthSession) == 0
+
+
+# --- token format guard ----------------------------------------------------------
+
+
+@pytest.mark.parametrize("token", ["", "short", "A" * 44, "A" * 42 + "+"])
+def test_malformed_tokens_never_reach_the_database(
+    service: AuthService, token: str, sql_log: list[tuple[str, Any]]
+) -> None:
+    with pytest.raises(InvalidSessionError):
+        service.authenticate(token)
+    service.logout(token)  # idempotent no-op
+
+    assert sql_log == []

@@ -1,11 +1,15 @@
 import base64
 import re
 
+import pytest
+
 from app.models import AuthSession
 from app.security.session_tokens import (
     SESSION_TOKEN_BYTES,
+    SESSION_TOKEN_LENGTH,
     generate_session_token,
     hash_session_token,
+    is_well_formed_session_token,
 )
 
 
@@ -62,3 +66,34 @@ def test_auth_session_model_stores_only_a_token_hash() -> None:
 
     assert "token_hash" in columns
     assert not {name for name in columns if "token" in name} - {"token_hash"}
+
+
+def test_token_length_constant_matches_generated_tokens() -> None:
+    assert SESSION_TOKEN_LENGTH == 43
+    assert len(generate_session_token()) == SESSION_TOKEN_LENGTH
+
+
+def test_generated_tokens_are_well_formed() -> None:
+    assert all(is_well_formed_session_token(generate_session_token()) for _ in range(1000))
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "",
+        "A" * 42,  # too short
+        "A" * 44,  # too long
+        "A" * 42 + "+",  # standard base64 alphabet
+        "A" * 42 + "/",
+        "A" * 42 + "=",  # padding
+        "A" * 42 + "ñ",  # non-ASCII
+        "A" * 21 + " " + "A" * 21,  # whitespace
+        "A" * 42 + "\n",  # trailing newline (fullmatch, not match)
+    ],
+)
+def test_malformed_tokens_are_rejected(token: str) -> None:
+    assert is_well_formed_session_token(token) is False
+
+
+def test_valid_43_character_token_is_accepted() -> None:
+    assert is_well_formed_session_token("Ab-_" * 10 + "xyz") is True

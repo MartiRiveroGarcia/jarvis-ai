@@ -1,7 +1,7 @@
 # Jarvis backend
 
 FastAPI service that will host Jarvis's API, AI logic and integrations.
-It currently exposes a single health check endpoint.
+It currently exposes a health check and the authentication API.
 
 ## Requirements
 
@@ -100,6 +100,48 @@ while migrations run with them off and use batch mode, as Alembic recommends for
 SQLite table recreation. Constraint names follow a fixed naming convention so
 migrations behave the same on SQLite and PostgreSQL.
 
+## Authentication API
+
+Jarvis's client is a native mobile app (Flutter, Android-first). It authenticates
+with an **opaque session token sent as a Bearer credential**. The token is a random
+256-bit value, **not a JWT**: it carries no data and is only meaningful to this server.
+
+| Endpoint                  | Auth   | Success                    | Errors                         |
+| ------------------------- | ------ | -------------------------- | ------------------------------ |
+| `POST /api/auth/register` | none   | `201` user                 | `403`, `409`, `422`            |
+| `POST /api/auth/login`    | none   | `200` user + session token | `401`, `403`, `422`            |
+| `GET /api/auth/me`        | Bearer | `200` user                 | `401`                          |
+| `POST /api/auth/logout`   | Bearer | `204` (always, idempotent) | none                           |
+
+```bash
+curl -X POST localhost:8000/api/auth/register -H "Content-Type: application/json" \
+  -d '{"email": "me@example.com", "password": "a long memorable passphrase"}'
+
+curl -X POST localhost:8000/api/auth/login -H "Content-Type: application/json" \
+  -d '{"email": "me@example.com", "password": "a long memorable passphrase"}'
+# {"user": {...}, "session_token": "<43 characters>", "token_type": "bearer",
+#  "expires_at": "2026-10-12T10:00:00Z"}
+
+curl localhost:8000/api/auth/me -H "Authorization: Bearer <session_token>"
+curl -X POST localhost:8000/api/auth/logout -H "Authorization: Bearer <session_token>"
+```
+
+In `/docs`, use **Authorize** and paste the session token.
+
+- Registration does not log in; call `/login` afterwards.
+- The session token is returned **only once**, in the login response. Clients must store
+  it in platform secure storage (Android Keystore via Flutter Secure Storage) and send
+  it only in the `Authorization` header, never in URLs.
+- Sessions last `JARVIS_SESSION_TTL_DAYS` (default 7) and are not extended by activity.
+  Logout revokes the session immediately.
+- Every authentication failure on a protected route (missing, malformed, unknown,
+  expired or disabled-account token) returns the same `401` with
+  `WWW-Authenticate: Bearer`. Unknown email and wrong password return identical `401`s.
+- Validation errors (`422`) report field location and message but never echo submitted
+  values. All `/api/auth/*` responses carry `Cache-Control: no-store`.
+- There is no CORS or CSRF handling: native clients are not subject to browser CORS or
+  CSRF. A future browser client would need its own design.
+
 ## Security notes
 
 - Passwords are hashed with **Argon2id** (`argon2-cffi`), using parameters pinned to
@@ -113,14 +155,27 @@ migrations behave the same on SQLite and PostgreSQL.
   and adjust them if hashing is too slow or too fast for that hardware. Changing them
   requires regenerating the dummy hash in `app/security/passwords.py` (a test enforces
   this); existing hashes keep working and are upgraded on the next successful login.
+- **HTTPS is mandatory in production.** A session token grants access to the account
+  until it expires or is revoked, so it must never travel over plain HTTP outside local
+  development (emulator or device on your own network).
+- The raw session token exists only in memory, in the login response, in the client's
+  secure storage and in the `Authorization` header. It is never stored in the database,
+  logged, used as a SQL parameter or included in error messages; SQLAlchemy runs with
+  `hide_parameters=True`.
+- **Logging rule:** the application never logs `Authorization` headers, request bodies
+  of authentication endpoints, passwords, session tokens, password hashes or token
+  hashes. Production infrastructure must preserve this rule: reverse proxies,
+  ingress/load balancers, APM/observability agents and request tracing must not log
+  or capture the `Authorization` header or authentication request bodies.
 
 ## Structure
 
 ```text
 app/
 ├── main.py           # create_app() factory: builds the app and registers routers
+├── dependencies.py   # shared FastAPI dependencies (auth service, Bearer token, current user)
 ├── config/           # environment-based settings
-├── controllers/      # FastAPI routers (HTTP layer)
+├── controllers/      # FastAPI routers and HTTP error handlers (HTTP layer)
 ├── database/         # SQLAlchemy base, engine, session factory, get_db, UTC datetime type
 ├── models/           # SQLAlchemy ORM models (database tables)
 ├── repositories/     # persistence queries; flush only, never commit
