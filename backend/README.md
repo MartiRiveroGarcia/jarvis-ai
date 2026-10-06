@@ -130,8 +130,8 @@ In `/docs`, use **Authorize** and paste the session token.
 
 - Registration does not log in; call `/login` afterwards.
 - The session token is returned **only once**, in the login response. Clients must store
-  it in platform secure storage (Android Keystore via Flutter Secure Storage) and send
-  it only in the `Authorization` header, never in URLs.
+  it in platform secure storage (on Android, Flutter Secure Storage backed by the
+  Android Keystore) and send it only in the `Authorization` header, never in URLs.
 - Sessions last `JARVIS_SESSION_TTL_DAYS` (default 7) and are not extended by activity.
   Logout revokes the session immediately.
 - Every authentication failure on a protected route (missing, malformed, unknown,
