@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:flutter/widgets.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:jarvis/app/router.dart';
@@ -162,18 +162,60 @@ void main() {
       expect(location(tester), Routes.home);
     });
 
-    testWidgets('logout from home returns to login', (tester) async {
+    testWidgets('home -> settings -> back arrow -> home', (tester) async {
+      await pumpJarvis(
+        tester,
+        api: FakeAuthApi(),
+        store: InMemoryTokenStore(testSession()),
+      );
+      await tester.pumpAndSettle();
+
+      // Settings is pushed on top of home, so check what is on screen.
+      await tester.tap(find.byKey(const Key('home-settings')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('settings-screen')), findsOneWidget);
+
+      await tester.tap(find.byType(BackButton));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('settings-screen')), findsNothing);
+      expect(find.byKey(const Key('assistant-home')), findsOneWidget);
+    });
+
+    testWidgets('system back from settings returns home', (tester) async {
+      await pumpJarvis(
+        tester,
+        api: FakeAuthApi(),
+        store: InMemoryTokenStore(testSession()),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('home-settings')));
+      await tester.pumpAndSettle();
+
+      final handled = await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+
+      expect(handled, isTrue);
+      expect(find.byKey(const Key('assistant-home')), findsOneWidget);
+    });
+
+    testWidgets('sign out from settings returns to login with nothing to '
+        'go back to', (tester) async {
       final store = InMemoryTokenStore(
         AuthSession(token: testToken, expiresAt: DateTime.utc(2030)),
       );
       await pumpJarvis(tester, api: FakeAuthApi(), store: store);
       await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('home-settings')));
+      await tester.pumpAndSettle();
 
-      await tester.tap(find.byKey(const Key('home-logout')));
+      await tester.tap(find.byKey(const Key('sign-out')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('confirm-sign-out')));
       await tester.pumpAndSettle();
 
       expect(location(tester), Routes.login);
       expect(store.session, isNull);
+      expect(find.byKey(const Key('settings-screen')), findsNothing);
     });
   });
 }

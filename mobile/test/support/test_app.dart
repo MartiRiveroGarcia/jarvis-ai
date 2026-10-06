@@ -9,12 +9,21 @@ import 'fake_auth_api.dart';
 import 'in_memory_token_store.dart';
 
 /// Pumps the real app with a fake AuthApi and an in-memory token store.
+///
+/// Reduced motion is on by default so the voice button's endless idle pulse
+/// does not prevent pumpAndSettle(); animation tests pass `reduceMotion: false`.
 Future<ProviderContainer> pumpJarvis(
   WidgetTester tester, {
   required FakeAuthApi api,
   required InMemoryTokenStore store,
   DateTime? now,
+  bool reduceMotion = true,
 }) async {
+  if (reduceMotion) {
+    tester.platformDispatcher.accessibilityFeaturesTestValue =
+        const FakeAccessibilityFeatures(disableAnimations: true);
+    addTearDown(tester.platformDispatcher.clearAccessibilityFeaturesTestValue);
+  }
   final container = ProviderContainer.test(
     retry: (_, _) => null,
     overrides: [

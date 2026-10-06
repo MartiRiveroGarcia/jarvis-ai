@@ -70,7 +70,7 @@ void main() {
     await _submit(tester);
 
     expect(api.calls, ['register', 'login']);
-    expect(find.byKey(const Key('home-signed-in')), findsOneWidget);
+    expect(find.byKey(const Key('assistant-home')), findsOneWidget);
   });
 
   testWidgets('confirm-password mismatch is rejected locally', (tester) async {

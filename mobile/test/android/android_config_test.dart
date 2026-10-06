@@ -76,4 +76,32 @@ void main() {
       }
     }
   });
+
+  test('no build type declares microphone or audio permissions', () {
+    for (final buildType in ['main', 'debug', 'profile']) {
+      final manifest = _read('$buildType/AndroidManifest.xml');
+      expect(manifest, isNot(contains('RECORD_AUDIO')), reason: buildType);
+      expect(
+        manifest,
+        isNot(contains('MODIFY_AUDIO_SETTINGS')),
+        reason: buildType,
+      );
+    }
+  });
+
+  test('no microphone, audio or speech package is a dependency', () {
+    // Sprint 01 voice is visual only. This is not an allow-list: other packages
+    // may be added freely; only audio-capture/speech packages are flagged.
+    final pubspec = File('pubspec.yaml').readAsStringSync();
+    final packages = RegExp(
+      r'^  ([a-z0-9_]+):',
+      multiLine: true,
+    ).allMatches(pubspec).map((m) => m.group(1)!).toSet();
+    final audioRelated = RegExp(
+      r'audio|record|speech|microphone|sound|_stt|_tts|^stt|^tts|vosk|whisper',
+    );
+
+    expect(packages.where(audioRelated.hasMatch), isEmpty);
+    expect(packages, contains('flutter')); // the parser found the section
+  });
 }

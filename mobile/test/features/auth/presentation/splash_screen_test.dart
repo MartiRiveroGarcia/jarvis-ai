@@ -23,7 +23,7 @@ void main() {
     await tester.tap(find.text('Retry'));
     await tester.pumpAndSettle();
 
-    expect(find.byKey(const Key('home-signed-in')), findsOneWidget);
+    expect(find.byKey(const Key('assistant-home')), findsOneWidget);
   });
 
   testWidgets('restore failure offers "Sign out of this device"', (
@@ -57,7 +57,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byKey(const Key('sign-out-failed')), findsOneWidget);
-    expect(find.byKey(const Key('home-signed-in')), findsNothing);
+    expect(find.byKey(const Key('assistant-home')), findsNothing);
     expect(find.byKey(const Key('login-email')), findsNothing);
 
     store.failClear = false;

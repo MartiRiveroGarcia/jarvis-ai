@@ -173,7 +173,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(attempts, 2);
-    expect(find.byKey(const Key('home-signed-in')), findsOneWidget);
+    expect(find.byKey(const Key('assistant-home')), findsOneWidget);
   });
 
   testWidgets('success navigates to the authenticated home', (tester) async {
@@ -183,6 +183,6 @@ void main() {
     await tester.tap(field('login-submit'));
     await tester.pumpAndSettle();
 
-    expect(find.byKey(const Key('home-signed-in')), findsOneWidget);
+    expect(find.byKey(const Key('assistant-home')), findsOneWidget);
   });
 }

@@ -4,7 +4,9 @@ Native Flutter client for Jarvis, a voice-first personal AI assistant. Android-f
 shared code is kept portable so iOS can be added later.
 
 **Status:** Sprint 01 in progress. Registration, login, session restore and logout work
-against the backend; the assistant home screen is still a placeholder.
+against the backend. The assistant home has a voice button that is **visual only**: it
+gives feedback but records no audio, requests no microphone permission and calls no
+service. Settings shows the account and lets you sign out.
 
 ## Requirements
 
@@ -60,6 +62,12 @@ see `/` or `/settings`.
 - **Logout:** best-effort server logout, then the local session is always removed.
 - **Invariant:** "signed out" means no session is stored on the device. If removing it
   fails, the app stays on a blocking Retry screen instead.
+
+## App version
+
+Settings shows the `version` from `pubspec.yaml`, read from `FLUTTER_BUILD_NAME`, which
+the Flutter tool passes to every build automatically. It is build metadata, not runtime
+configuration, and the row is hidden if it is missing.
 
 ## Security notes
 
