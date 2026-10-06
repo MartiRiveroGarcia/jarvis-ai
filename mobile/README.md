@@ -1,80 +1,94 @@
 # Jarvis mobile
 
 Native Flutter client for Jarvis, a voice-first personal AI assistant. Android-first;
-shared code is kept portable so iOS can be added later.
+the Dart code is kept portable so iOS can be added later (there is no iOS project yet).
 
-**Status:** Sprint 01 in progress. Registration, login, session restore and logout work
-against the backend. The assistant home has a voice button that is **visual only**: it
-gives feedback but records no audio, requests no microphone permission and calls no
-service. Settings shows the account and lets you sign out.
+## What works (Sprint 01)
 
-## Requirements
+- Register and log in (email plus a 15–128 character password; spaces allowed).
+- Session restore at startup through `GET /api/auth/me`. If the server can't be
+  reached, the app offers Retry instead of signing you out.
+- The session token is kept in secure storage backed by the Android Keystore.
+- Protected routing: signed-out users only see login and registration.
+- Assistant home with a **visual-only** voice button.
+- Settings: email, member-since date, app version and sign out.
 
-- Flutter stable (developed with Flutter 3.47 / Dart 3.13)
-- Android SDK with an emulator or a physical device
+**Not implemented yet:** real voice (no microphone access, recording, speech-to-text
+or text-to-speech), Microsoft Foundry, AI agents and Android assistant integration.
+The voice button only shows "Voice interaction is coming soon."
 
-## Run and check
+## Prerequisites
+
+- Flutter stable, developed with **Flutter 3.47.6 / Dart 3.13.5**
+- Android SDK with the API 36 platform, plus an emulator or an Android phone with
+  developer options and device debugging enabled (USB or wireless)
+- The Jarvis backend running locally — see [../backend/README.md](../backend/README.md)
 
 ```bash
+cd mobile
 flutter pub get
-flutter run                 # on a connected device or emulator
-flutter analyze
-flutter test
 ```
 
-## Connecting to the backend
+## Run against the local backend
 
-The API base URL is set at build time with `--dart-define=API_BASE_URL=...` and is
-validated when the app starts: an invalid value stops the app immediately.
+**Android emulator.** Start the backend (`uvicorn app.main:app --reload` in
+`backend/`), then:
 
-| Target              | Command                                                                        |
-| ------------------- | ------------------------------------------------------------------------------ |
-| Android emulator    | `flutter run` (default `http://10.0.2.2:8000`, the emulator's alias for your computer) |
-| Phone on your Wi-Fi | `flutter run --dart-define=API_BASE_URL=http://192.168.1.20:8000` (your computer's LAN IP) |
-| Release build       | `flutter build apk --release --dart-define=API_BASE_URL=https://your-api.example` |
+```bash
+flutter run      # uses http://10.0.2.2:8000, the emulator's alias for your computer
+```
 
-For a physical phone, start the backend so it listens on your network, not only on
-localhost: `uvicorn app.main:app --host 0.0.0.0 --port 8000`.
+**Physical phone on the same Wi-Fi.** The backend must listen on your network, not
+only on localhost:
 
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8000                  # in backend/
+flutter run --dart-define=API_BASE_URL=http://192.168.1.20:8000  # your computer's LAN IP
+```
+
+If the phone can't connect, check that your firewall allows port 8000.
+
+### `API_BASE_URL`
+
+| Build                     | Example                                               |
+| ------------------------- | ----------------------------------------------------- |
+| Debug, emulator (default) | `http://10.0.2.2:8000`                                |
+| Debug, phone on Wi-Fi     | `--dart-define=API_BASE_URL=http://192.168.1.20:8000` |
+| Release                   | `--dart-define=API_BASE_URL=https://api.example.com`  |
+
+- The URL is checked when the app starts; an invalid value stops it immediately.
 - **Plain HTTP works only in debug builds.** Profile and release builds require
-  `https://`: the app rejects `http://` at startup and Android's network security config
-  blocks cleartext traffic (`android/app/src/main/res/xml/network_security_config.xml`;
-  the debug-only override lives in `src/debug/`).
-- **`API_BASE_URL` is configuration, not a secret.** Anything passed with
-  `--dart-define` is compiled into the app and can be extracted from it. Never pass
-  credentials or keys this way.
+  `https://`, enforced both by the app and by Android's network security config.
+- It is configuration, not a secret: values passed with `--dart-define` are compiled
+  into the app and can be extracted from it.
 
-## Authentication flow
+## How sign-in works
 
-State lives in `AuthController` (Riverpod) as an explicit `AuthState`:
-`initializing`, `unauthenticated`, `authenticated(user)`, `restoreFailed` and
-`signOutFailed`. A single `GoRouter` follows it: restoring and failure states stay on
-`/splash` (with Retry), signed-out users see `/login` or `/register`, signed-in users
-see `/` or `/settings`.
-
-- **Startup:** no stored session → login. A locally expired session is removed without
-  a network call. Otherwise `GET /api/auth/me` decides: 401 removes the session; a
-  network or server error shows Retry and keeps the session (offline is not logged out).
-- **Login:** the session is written to secure storage *before* the app treats you as
-  signed in. If storage fails, the new server session is revoked best-effort.
-- **Register:** creates the account, then logs in automatically. If that automatic login
-  fails, the app returns to Login with the email filled in.
-- **Logout:** best-effort server logout, then the local session is always removed.
-- **Invariant:** "signed out" means no session is stored on the device. If removing it
-  fails, the app stays on a blocking Retry screen instead.
-
-## App version
-
-Settings shows the `version` from `pubspec.yaml`, read from `FLUTTER_BUILD_NAME`, which
-the Flutter tool passes to every build automatically. It is build metadata, not runtime
-configuration, and the row is hidden if it is missing.
+- **Startup:** with no stored session you see Login. A locally expired session is
+  removed without a network call; otherwise `GET /api/auth/me` decides. A 401 signs
+  you out; a network or server error shows Retry and keeps the session.
+- **Login** saves the session to secure storage before the app treats you as signed in.
+- **Register** creates the account and logs in automatically. If that automatic login
+  fails, you land on Login with your email filled in.
+- **Sign out** asks for confirmation, attempts server revocation best-effort, and only
+  treats the device as signed out once the local credential has been removed. If local
+  removal fails, the app stays on a Retry screen.
 
 ## Security notes
 
-- The session token is stored with `flutter_secure_storage` (AES-GCM, key protected by
-  the Android Keystore). Only the token and its expiry are stored: never the password
-  or email.
-- App data is excluded from Android backups and device-to-device transfers, so the
-  token never leaves the device.
-- The API client sends `Authorization: Bearer` only on authenticated calls, only to
-  the configured base URL, and never logs requests, headers or tokens.
+- Only the session token and its expiry are stored on the device, in secure storage
+  whose encryption key is backed by the Android Keystore — never the password or email.
+- App data is excluded from Android backups and device-to-device transfers.
+- The token is sent only as `Authorization: Bearer`, only to the configured base URL,
+  and is never logged.
+- The app version shown in Settings comes from `pubspec.yaml` via the Flutter build
+  (`FLUTTER_BUILD_NAME`); it is build metadata, not configuration.
+
+## Checks
+
+```bash
+flutter analyze
+dart format --set-exit-if-changed .
+flutter test
+flutter build apk --debug
+```

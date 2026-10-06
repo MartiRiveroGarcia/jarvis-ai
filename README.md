@@ -4,28 +4,36 @@ Jarvis is a voice-first personal AI assistant designed primarily for Android.
 
 The long-term goal is an assistant you talk to, backed by an AI orchestrator that
 decides which tools or specialised agents are needed to complete a request — for
-example searching the web, managing Trello cards or updating an Excel workbook. None
-of the AI, voice or assistant features exist yet; see the roadmap.
+example searching the web, managing Trello cards or updating an Excel workbook. The
+mobile assistant shell is implemented, but real voice interaction, Microsoft Foundry
+integration, AI agents and Android assistant integration are not implemented yet; see
+the roadmap.
 
 Jarvis is built incrementally, sprint by sprint, as a learning and portfolio project
 alongside the Microsoft AI-103 certification.
 
 ## Current status
 
-**Sprint 01 — Foundation and authentication (in progress).**
+**Sprint 01 — Foundation, authentication and Flutter client (complete).**
 
-Implemented:
+Backend:
 
-- [x] Repository basics (gitignore, license, README)
 - [x] FastAPI backend with environment-based settings and `GET /api/health`
-- [x] Database layer: SQLAlchemy 2.x models and Alembic migrations (SQLite locally)
-- [x] Authentication API: register, login, current user and logout, using opaque
-      server-side sessions sent as Bearer tokens
+- [x] SQLAlchemy 2.x models and Alembic migrations (SQLite locally, PostgreSQL-compatible)
+- [x] Authentication API: register, login, current user and logout
+- [x] Argon2id password hashing and opaque server-side sessions sent as Bearer tokens
 
-Planned for this sprint:
+Mobile (Flutter, Android-first):
 
-- [ ] Flutter Android app: register and log in, store the session token in secure
-      storage, a protected main screen, and log out
+- [x] Login and registration
+- [x] Session restore at startup and token storage in secure storage backed by the
+      Android Keystore
+- [x] Protected routing: signed-out users only reach login and registration
+- [x] Assistant home with a **visual-only** voice button
+- [x] Account settings and sign out
+
+Not implemented yet: voice interaction, Microsoft Foundry, AI agents and Android
+assistant integration — see the roadmap.
 
 ## Architecture
 
@@ -37,8 +45,9 @@ Flutter app (Android-first)  ──HTTPS + Authorization: Bearer──▶  FastA
                                  controllers → services → repositories → database
 ```
 
-**Client (planned).** A native Flutter app, Android-first, keeping the architecture
-iOS-compatible where practical. There is no web/browser frontend.
+**Client (implemented).** A native Flutter app, Android-first, keeping the architecture
+iOS-compatible where practical. There is no web/browser frontend. See
+[mobile/README.md](mobile/README.md).
 
 **Backend (implemented).** An MVC-inspired layered design adapted to FastAPI:
 
@@ -94,7 +103,7 @@ Flutter mobile app
 
 - Users register with email and password and log in to receive an **opaque session
   token** — a random 256-bit value, **not a JWT**.
-- The app stores the token in platform secure storage (Android Keystore via Flutter
+- The app keeps the token in secure storage backed by the Android Keystore (Flutter
   Secure Storage) and sends it as `Authorization: Bearer <token>`.
 - Sessions are server-side: only a SHA-256 hash of the token is stored, sessions expire
   after 7 days, and logout revokes them immediately.
@@ -104,13 +113,15 @@ Flutter mobile app
 
 Details: [backend/README.md](backend/README.md#authentication-api).
 
-## Mobile client (planned)
+## Mobile client
 
-The Flutter app will be deliberately minimal and voice-driven:
+The Flutter app is deliberately minimal and voice-first:
 
-- Register and log in screens.
-- A main assistant screen centred around a voice interaction button.
-- A small account/settings screen, including logout.
+- Login and registration screens.
+- A main assistant screen centred around a voice button. In Sprint 01 the button is
+  **visual only**: it records nothing, requests no microphone permission and calls no
+  service.
+- A small settings screen with account details and sign out.
 
 Future Android integration (planned, not implemented):
 
@@ -122,25 +133,25 @@ Future Android integration (planned, not implemented):
 
 ## Tech stack
 
-| Area     | Technology                                                               |
-| -------- | ------------------------------------------------------------------------ |
-| Client   | Flutter (Dart), Android-first _(planned)_                                |
-| Backend  | Python 3.12+, FastAPI, Pydantic, Uvicorn                                 |
-| Database | SQLAlchemy 2.x, Alembic; SQLite locally, PostgreSQL-compatible           |
-| Security | Argon2id (`argon2-cffi`), opaque server-side sessions with Bearer tokens |
-| AI       | Microsoft Azure / Microsoft Foundry _(planned)_                          |
-| Testing  | pytest and Ruff (backend); Flutter testing added with the app            |
+| Area     | Technology                                                                      |
+| -------- | ------------------------------------------------------------------------------- |
+| Client   | Flutter 3.47 (Dart), Android-first; Riverpod, go_router, flutter_secure_storage |
+| Backend  | Python 3.12+, FastAPI, Pydantic, Uvicorn                                        |
+| Database | SQLAlchemy 2.x, Alembic; SQLite locally, PostgreSQL-compatible                  |
+| Security | Argon2id (`argon2-cffi`), opaque server-side sessions with Bearer tokens        |
+| AI       | Microsoft Azure / Microsoft Foundry _(planned)_                                 |
+| Testing  | pytest and Ruff (backend); flutter test and flutter analyze (mobile)            |
 
 ## Local development
 
 - Backend: see [backend/README.md](backend/README.md).
-- Mobile app: not available yet.
+- Mobile app: see [mobile/README.md](mobile/README.md).
 
 ## Roadmap
 
 | Sprint | Focus                                                        | Status      |
 | ------ | ------------------------------------------------------------ | ----------- |
-| 01     | Foundation, authentication API and Flutter client            | In progress |
+| 01     | Foundation, authentication API and Flutter client            | Complete    |
 | 02     | AI core with Microsoft Foundry                               | Planned     |
 | 03     | Agent core and tool calling                                  | Planned     |
 | 04     | Trello integration                                           | Planned     |
