@@ -1,5 +1,6 @@
 """Shared FastAPI dependencies."""
 
+from functools import lru_cache
 from typing import Annotated
 
 from fastapi import Depends
@@ -8,8 +9,10 @@ from sqlalchemy.orm import Session
 
 from app.config.settings import Settings, get_settings
 from app.database.session import get_db
+from app.integrations.foundry import FoundryResponsesClient
 from app.models.user import User
 from app.security.session_tokens import is_well_formed_session_token
+from app.services.assistant_service import AssistantService
 from app.services.auth_errors import InvalidSessionError
 from app.services.auth_service import AuthService
 
@@ -52,3 +55,20 @@ def get_current_user(
     if token is None:
         raise InvalidSessionError
     return auth_service.authenticate(token)
+
+
+@lru_cache
+def get_foundry_client() -> FoundryResponsesClient:
+    """Return the process-wide Foundry client, created on the first assistant request.
+
+    Construction only stores configuration; the Entra ID credential and the SDK client
+    are created inside the client on its first call, then reused. Raises
+    FoundryNotConfiguredError (never cached) when Foundry is not configured.
+    """
+    return FoundryResponsesClient.from_settings(get_settings())
+
+
+def get_assistant_service() -> AssistantService:
+    # The provider is only called inside AssistantService.respond(), so neither app
+    # startup nor any other endpoint touches Foundry.
+    return AssistantService(generator_provider=get_foundry_client)

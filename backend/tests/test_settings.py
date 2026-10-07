@@ -297,22 +297,93 @@ def test_there_is_no_api_key_setting() -> None:
     assert not {name for name in names if "key" in name or "secret" in name}
 
 
-def test_app_starts_without_foundry_and_imports_no_azure_sdk(tmp_path: Path) -> None:
-    # A fresh interpreter, so imports really happen. Commit-level guarantee: no
-    # Azure or OpenAI SDK is imported (let alone contacted) at startup.
-    script = (
-        "import sys\n"
-        "from fastapi.testclient import TestClient\n"
-        "from app.config.settings import Settings, get_settings\n"
-        # Ignore a developer's local .env, which may configure Foundry.
-        "Settings.model_config['env_file'] = None\n"
-        "from app.main import app\n"
-        "assert get_settings().foundry_configured is False\n"
-        "assert TestClient(app).get('/api/health').status_code == 200\n"
-        "loaded = [m for m in sys.modules if m == 'openai' or m.startswith(('openai.', 'azure'))]\n"
-        "assert not loaded, loaded\n"
-    )
-    env = {key: value for key, value in os.environ.items() if not key.startswith("JARVIS_FOUNDRY_")}
-    env["DATABASE_URL"] = f"sqlite:///{tmp_path / 'unused.db'}"
+# Runs in a fresh interpreter. Every way to reach Azure is replaced with a recorder
+# *before* the app is imported: the Entra ID credential and token provider, the
+# Foundry SDK client and any outbound socket. The app then starts and serves health
+# and the full auth flow; nothing may have been recorded.
+_STARTUP_SCRIPT = """
+import socket
+import sys
 
-    subprocess.run([sys.executable, "-c", script], cwd=BACKEND_DIR, env=env, check=True)
+import azure.identity
+
+used = []
+
+
+class RecordingCredential:
+    def __init__(self, *args, **kwargs):
+        used.append("DefaultAzureCredential")
+
+    def get_token(self, *args, **kwargs):
+        used.append("get_token")
+
+
+def recording_token_provider(*args, **kwargs):
+    used.append("get_bearer_token_provider")
+
+
+azure.identity.DefaultAzureCredential = RecordingCredential
+azure.identity.get_bearer_token_provider = recording_token_provider
+
+from app.integrations.foundry import responses_client
+
+
+def recording_get_client(self):
+    used.append("foundry_sdk_client")
+
+
+responses_client.FoundryResponsesClient._get_client = recording_get_client
+
+original_connect = socket.socket.connect
+
+
+def recording_connect(self, address):
+    used.append("socket_connect")
+    return original_connect(self, address)
+
+
+socket.socket.connect = recording_connect
+
+from fastapi.testclient import TestClient
+
+from app import models  # noqa: F401
+from app.config.settings import Settings, get_settings
+from app.database.base import Base
+from app.database.session import get_engine
+
+# Ignore a developer's local .env, which may configure the real Foundry.
+Settings.model_config["env_file"] = None
+
+from app.dependencies import get_foundry_client
+from app.main import app
+
+assert get_settings().foundry_configured is (sys.argv[1] == "configured")
+Base.metadata.create_all(get_engine())
+
+with TestClient(app) as client:
+    assert client.get("/api/health").status_code == 200
+    account = {"email": "startup@example.com", "password": "correct horse battery staple"}
+    assert client.post("/api/auth/register", json=account).status_code == 201
+    token = client.post("/api/auth/login", json=account).json()["session_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    assert client.get("/api/auth/me", headers=headers).status_code == 200
+    assert client.post("/api/auth/logout", headers=headers).status_code == 204
+
+assert used == [], used
+assert get_foundry_client.cache_info().currsize == 0
+"""
+
+
+@pytest.mark.parametrize("foundry", ["configured", "not-configured"])
+def test_startup_and_other_endpoints_never_touch_azure(tmp_path: Path, foundry: str) -> None:
+    # SDK modules may be imported; what must not happen is creating an Azure
+    # credential, requesting a token or calling Foundry over the network.
+    env = {key: value for key, value in os.environ.items() if not key.startswith("JARVIS_FOUNDRY_")}
+    env["DATABASE_URL"] = f"sqlite:///{tmp_path / 'startup.db'}"
+    if foundry == "configured":
+        env["JARVIS_FOUNDRY_PROJECT_ENDPOINT"] = ENDPOINT
+        env["JARVIS_FOUNDRY_MODEL"] = "startup-test-deployment"
+
+    subprocess.run(
+        [sys.executable, "-c", _STARTUP_SCRIPT, foundry], cwd=BACKEND_DIR, env=env, check=True
+    )
