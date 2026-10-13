@@ -306,6 +306,33 @@ void main() {
       });
     }
 
+    test('5xx keeps a short JSON detail, outside toString()', () async {
+      final error = await errorFor(
+        http.Response('{"detail": "Server detail text"}', 503),
+      );
+
+      expect(error, isA<ServerException>());
+      expect((error as ServerException).detail, 'Server detail text');
+      expect(error.message, 'The server encountered an error');
+      expect(error.toString(), isNot(contains('Server detail text')));
+    });
+
+    test('5xx without a JSON detail has a null detail', () async {
+      for (final body in ['<html>Bad gateway</html>', '', '{"other": 1}']) {
+        final error = await errorFor(http.Response(body, 502));
+
+        expect((error as ServerException).detail, isNull, reason: body);
+      }
+    });
+
+    test('5xx detail is truncated like other details', () async {
+      final error = await errorFor(
+        http.Response(jsonEncode({'detail': 'x' * 1000}), 503),
+      );
+
+      expect((error as ServerException).detail!.length, 200);
+    });
+
     test('other status codes -> UnexpectedResponseException', () async {
       expect(
         await errorFor(http.Response('{"detail": "teapot"}', 418)),
@@ -383,6 +410,74 @@ void main() {
         expect(error.toString(), isNot(contains('internal-host.example')));
       }
     });
+  });
+
+  group('timeouts', () {
+    Future<http.Response> slow(http.Request _) => Future.delayed(
+      const Duration(milliseconds: 200),
+      () => http.Response('{}', 200),
+    );
+
+    test('the default timeout is 15 seconds', () {
+      final client = ApiClient(
+        baseUrl: _base,
+        httpClient: MockClient((_) => _json({})),
+        tokenStore: InMemoryTokenStore(),
+      );
+
+      expect(client.timeout, const Duration(seconds: 15));
+    });
+
+    test('calls without an override use the client timeout', () async {
+      final (:client, requests: _, store: _) = _setUp(
+        slow,
+        timeout: const Duration(milliseconds: 10),
+      );
+
+      await expectLater(
+        client.post('/api/auth/login', body: {}),
+        throwsA(isA<NetworkException>()),
+      );
+    });
+
+    test('a longer per-request timeout lets a slow request finish', () async {
+      final (:client, requests: _, store: _) = _setUp(
+        slow,
+        timeout: const Duration(milliseconds: 10),
+      );
+
+      expect(
+        await client.post(
+          '/api/auth/login',
+          body: {},
+          timeout: const Duration(seconds: 5),
+        ),
+        <String, Object?>{},
+      );
+    });
+
+    test(
+      'a shorter per-request timeout applies to that request only',
+      () async {
+        final (:client, requests: _, store: _) = _setUp(slow);
+
+        await expectLater(
+          client.post(
+            '/api/auth/login',
+            body: {},
+            timeout: const Duration(milliseconds: 10),
+          ),
+          throwsA(
+            isA<NetworkException>().having(
+              (e) => e.isTimeout,
+              'isTimeout',
+              true,
+            ),
+          ),
+        );
+        expect(await client.post('/api/auth/login', body: {}), isEmpty);
+      },
+    );
   });
 
   test('the client never prints anything', () async {
