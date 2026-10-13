@@ -1,7 +1,8 @@
 # Jarvis backend
 
-FastAPI service that will host Jarvis's API, AI logic and integrations.
-It currently exposes a health check and the authentication API.
+FastAPI service that hosts Jarvis's API, AI logic and integrations.
+It currently exposes a health check, the authentication API and a text assistant
+endpoint backed by Microsoft Foundry (optional).
 
 ## Requirements
 
@@ -63,8 +64,12 @@ Settings are read from environment variables prefixed with `JARVIS_`, or from
 | `JARVIS_REGISTRATION_ENABLED` | `true`                          | Allow public sign-up; disable in production after creating your account |
 | `DATABASE_URL`                | `sqlite:///<backend>/jarvis.db` | SQLAlchemy database URL (no `JARVIS_` prefix)                           |
 
-`.env` is ignored by Git. Never commit secrets; add new variables to `.env.example`
-with a placeholder value instead.
+The optional Microsoft Foundry settings (`JARVIS_FOUNDRY_*`) are described in
+[Microsoft Foundry (optional)](#microsoft-foundry-optional).
+
+`.env` is ignored by Git. Never commit `.env` files, credentials, tokens, keys or
+environment-specific endpoint values; add new variables to `.env.example` with a
+placeholder value instead.
 
 ### Database URL
 
@@ -142,6 +147,149 @@ In `/docs`, use **Authorize** and paste the session token.
 - There is no CORS or CSRF handling: native clients are not subject to browser CORS or
   CSRF. A future browser client would need its own design.
 
+## Microsoft Foundry (optional)
+
+The assistant endpoint sends each message to a model deployment in a
+[Microsoft Foundry](https://learn.microsoft.com/en-us/azure/foundry/how-to/develop/sdk-overview)
+project through the
+[Responses API](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/responses).
+
+Foundry is **optional**. Without it, the backend starts and works normally (health and
+authentication included); only `POST /api/assistant/respond` returns
+`503 The assistant is not available`.
+
+### Prerequisites
+
+- A Foundry project with a deployed model. The integration has been verified end to
+  end with a `gpt-5-mini` deployment and `reasoning.effort = "low"`.
+- Your identity needs the **Foundry User** role (shown as **Azure AI User** in some
+  places) on the project or a parent scope. See
+  [role-based access control for Foundry](https://learn.microsoft.com/en-us/azure/foundry/concepts/rbac-foundry).
+  Management-plane access does not by itself grant permission to call the model. The
+  identity still needs the appropriate Foundry data-plane role. An Owner can assign
+  that role; a Contributor cannot assign Azure RBAC roles.
+
+### Authentication: Microsoft Entra ID, no API keys
+
+The backend authenticates with Microsoft Entra ID through `DefaultAzureCredential`
+(`azure-identity`). There are **no API keys**, and deliberately no setting for one.
+
+- **Local development:** the credential uses your Azure CLI login (`az login`).
+- **Deployed in Azure (planned):** a
+  [managed identity](https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/overview)
+  with the same role on the project, picked up by the same credential chain without
+  code changes. See
+  [credential chains](https://learn.microsoft.com/en-us/azure/developer/python/sdk/authentication/credential-chains).
+
+### Azure CLI (local development)
+
+Install the Azure CLI by following Microsoft's
+[Linux installation guide](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli-linux?pivots=apt)
+(or the guide for your OS), then sign in:
+
+```bash
+az login                      # add --tenant <tenant> if the project is in another tenant
+az account show -o table      # confirm the active account and subscription
+az account set --subscription "<subscription name or id>"   # only if needed
+```
+
+**Linux Mint:** Linux Mint 21.x is based on Ubuntu `jammy`. When configuring
+Microsoft's apt repository, use the Ubuntu base codename (`jammy`) rather than Mint's
+own release name, which `lsb_release -cs` returns.
+
+See [Sign in with the Azure CLI](https://learn.microsoft.com/en-us/cli/azure/authenticate-azure-cli)
+for other sign-in options.
+
+### Settings
+
+Set the endpoint and model **together, or neither**; setting only one stops the
+backend at startup. Invalid values are rejected at startup with a message that never
+repeats the value.
+
+| Variable                           | Default | Description                                                                          |
+| ---------------------------------- | ------- | ------------------------------------------------------------------------------------ |
+| `JARVIS_FOUNDRY_PROJECT_ENDPOINT`  | unset   | Project endpoint from the project's Overview page (HTTPS, no query or credentials)   |
+| `JARVIS_FOUNDRY_MODEL`             | unset   | The **deployment name** to call (letters, digits, `.`, `-`, `_`; up to 64 chars)     |
+| `JARVIS_FOUNDRY_TIMEOUT_SECONDS`   | `25`    | Timeout for one Foundry request in seconds (1–120)                                   |
+| `JARVIS_FOUNDRY_MAX_OUTPUT_TOKENS` | `2000`  | Output budget per request (16–16384); for reasoning models it includes the reasoning |
+
+```bash
+# backend/.env (placeholders; use your own values)
+JARVIS_FOUNDRY_PROJECT_ENDPOINT=https://<resource>.services.ai.azure.com/api/projects/<project>
+JARVIS_FOUNDRY_MODEL=<deployment-name>
+```
+
+No model is hard-coded: `JARVIS_FOUNDRY_MODEL` is always the configured deployment
+name. Requests currently send `reasoning.effort = "low"`, which suits `gpt-5-mini`;
+other deployments may need different model-specific parameters later.
+
+### Behaviour
+
+- **Lazy initialisation:** starting the app creates no Azure credential, requests no
+  token and makes no Foundry call. The client, credential and SDK client are created
+  on the first assistant request and reused for the life of the process.
+- **Stateless requests:** each call sends a fixed Jarvis instruction plus the user's
+  message with `store=false`. There is no history, conversation id or
+  `previous_response_id`, and nothing is stored by Jarvis.
+- **No automatic retries** (`max_retries=0`): one Jarvis request makes at most one
+  Foundry request.
+
+### Troubleshooting
+
+Each failed assistant request is logged once by the `jarvis.assistant` logger with
+metadata only, for example:
+
+```text
+assistant request failed: error=FoundryUnavailableError reason=forbidden status_code=403 request_id=<id> input_length=27
+```
+
+| `reason`                       | HTTP      | Likely cause and fix                                                                |
+| ------------------------------ | --------- | ----------------------------------------------------------------------------------- |
+| `not_configured`               | 503       | Endpoint and model not set (logged at INFO)                                         |
+| `credential`                   | 503       | Not signed in or expired login: run `az login` (with `--tenant` if needed)          |
+| `unauthorized` (401)           | 503       | Signed in to the wrong tenant                                                       |
+| `forbidden` (403)              | 503       | Missing Foundry User role, or a new assignment not applied yet (wait a few minutes) |
+| `not_found` (404)              | 503       | Wrong project endpoint or deployment name                                           |
+| `bad_request` (400/422)        | 503       | The deployment rejected a request parameter (for example a model-specific option)   |
+| `incomplete_max_output_tokens` | 503       | The output budget ran out; raise `JARVIS_FOUNDRY_MAX_OUTPUT_TOKENS`                 |
+| `connection` / `timeout`       | 503 / 504 | Network or proxy problem, or a slow response                                        |
+| `rate_limited` (429)           | 429       | Deployment quota reached; retry later or raise the deployment's quota               |
+| `content_filter` / `refusal`   | 422       | The request was declined by content filtering or the model                          |
+
+`request_id` is Foundry's request identifier, useful when contacting Azure support; it
+contains no content.
+
+## Assistant API
+
+| Endpoint                      | Auth   | Success                | Errors                            |
+| ----------------------------- | ------ | ---------------------- | --------------------------------- |
+| `POST /api/assistant/respond` | Bearer | `200` `{"reply": ...}` | `401`, `422`, `429`, `503`, `504` |
+
+```bash
+curl -X POST localhost:8000/api/assistant/respond \
+  -H "Authorization: Bearer <session_token>" -H "Content-Type: application/json" \
+  -d '{"message": "Explain what RAG is in one short sentence."}'
+# {"reply": "<the model's answer>"}
+```
+
+- `message` is required; surrounding whitespace is trimmed, then it must be 1–4000
+  characters. Unknown fields are rejected.
+- Each request is independent: no history is kept and nothing is stored.
+- All `/api/assistant/*` responses, including errors, carry `Cache-Control: no-store`.
+
+| Status | `detail`                                          | When                                                          |
+| ------ | ------------------------------------------------- | ------------------------------------------------------------- |
+| `401`  | `Invalid or expired session`                      | Missing or invalid session (checked before the body)          |
+| `422`  | list of field errors (never echoes the message)   | Invalid body                                                  |
+| `422`  | `The assistant couldn't answer that request`      | Declined by content filtering or the model                    |
+| `429`  | `The assistant is busy. Please try again shortly` | Rate limited; `Retry-After` (seconds, at most 120) when known |
+| `503`  | `The assistant is not available`                  | Foundry is not configured                                     |
+| `503`  | `The assistant is temporarily unavailable`        | Foundry failed or returned an unusable response               |
+| `504`  | `The assistant took too long to respond`          | Timeout                                                       |
+
+Error responses never include Foundry error details, the endpoint or the deployment
+name.
+
 ## Security notes
 
 - Passwords are hashed with **Argon2id** (`argon2-cffi`), using parameters pinned to
@@ -167,23 +315,32 @@ In `/docs`, use **Authorize** and paste the session token.
   hashes. Production infrastructure must preserve this rule: reverse proxies,
   ingress/load balancers, APM/observability agents and request tracing must not log
   or capture the `Authorization` header or authentication request bodies.
+- **Microsoft Foundry:** access uses Microsoft Entra ID only (Azure CLI locally,
+  managed identity when deployed); there are no API keys. The mobile app never holds
+  Foundry or Azure credentials and never calls Azure directly.
+- Assistant messages and replies are never stored or logged; failures are logged with
+  metadata only (error type, reason, status code, Foundry request id, input length).
+- Never commit `.env` files, credentials, tokens, keys or environment-specific
+  endpoint values. Documentation uses placeholders only.
+- Automated tests isolate themselves from local Foundry configuration and do not make
+  real Foundry calls.
 
 ## Structure
 
 ```text
 app/
 ├── main.py           # create_app() factory: builds the app and registers routers
-├── dependencies.py   # shared FastAPI dependencies (auth service, Bearer token, current user)
+├── dependencies.py   # shared FastAPI dependencies (auth, current user, assistant service)
 ├── config/           # environment-based settings
 ├── controllers/      # FastAPI routers and HTTP error handlers (HTTP layer)
 ├── database/         # SQLAlchemy base, engine, session factory, get_db, UTC datetime type
+├── integrations/
+│   └── foundry/      # Foundry Responses API client and its errors (Entra ID, lazy)
 ├── models/           # SQLAlchemy ORM models (database tables)
 ├── repositories/     # persistence queries; flush only, never commit
 ├── schemas/          # Pydantic schemas (API contracts)
 ├── security/         # password hashing, password policy, session token utilities
-└── services/         # use cases (AuthService); own commit/rollback
+└── services/         # use cases (AuthService, AssistantService); own commit/rollback
 alembic/              # database migrations (env.py reads DATABASE_URL via Settings)
 tests/                # pytest suite
 ```
-
-Further layers (`integrations/`) will be added when there is real logic to put in them.

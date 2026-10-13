@@ -5,9 +5,9 @@ Jarvis is a voice-first personal AI assistant designed primarily for Android.
 The long-term goal is an assistant you talk to, backed by an AI orchestrator that
 decides which tools or specialised agents are needed to complete a request — for
 example searching the web, managing Trello cards or updating an Excel workbook. The
-mobile assistant shell is implemented, but real voice interaction, Microsoft Foundry
-integration, AI agents and Android assistant integration are not implemented yet; see
-the roadmap.
+mobile assistant shell and an authenticated text assistant endpoint backed by
+Microsoft Foundry are implemented; voice interaction, AI agents, tools and Android
+assistant integration are not implemented yet; see the roadmap.
 
 Jarvis is built incrementally, sprint by sprint, as a learning and portfolio project
 alongside the Microsoft AI-103 certification.
@@ -32,8 +32,20 @@ Mobile (Flutter, Android-first):
 - [x] Assistant home with a **visual-only** voice button
 - [x] Account settings and sign out
 
-Not implemented yet: voice interaction, Microsoft Foundry, AI agents and Android
-assistant integration — see the roadmap.
+**Sprint 02 — Basic AI assistant (in progress).**
+
+Backend:
+
+- [x] Microsoft Foundry integration: Responses API client authenticated with
+      Microsoft Entra ID (no API keys), optional and created lazily
+- [x] Authenticated text assistant endpoint: `POST /api/assistant/respond`
+      (one stateless request, one model reply)
+
+Upcoming in Sprint 02: speech-to-text and text-to-speech with Azure AI Speech, and
+push-to-talk in the mobile app. The app's voice button is still visual only.
+
+Not implemented yet: voice interaction, AI agents, tools, RAG and Android assistant
+integration — see the roadmap.
 
 ## Architecture
 
@@ -55,19 +67,20 @@ iOS-compatible where practical. There is no web/browser frontend. See
 | ------------ | ----------------------------------------------------------- | ----------- |
 | Controllers  | FastAPI routers: HTTP handling, validation, error mapping   | Implemented |
 | Schemas      | Pydantic request/response contracts                         | Implemented |
-| Services     | Use cases and transaction ownership (authentication so far) | Implemented |
+| Services     | Use cases and transaction ownership (auth, text assistant)  | Implemented |
 | Repositories | Persistence queries; never commit                           | Implemented |
 | Models       | SQLAlchemy ORM models                                       | Implemented |
 | Security     | Password hashing, password policy, session tokens           | Implemented |
 | Config       | Settings loaded from environment variables                  | Implemented |
-| Integrations | Isolated clients for Foundry, Trello, Microsoft Graph       | Planned     |
+| Integrations | Isolated clients: Foundry (done); Trello, Graph (planned)   | Partial     |
 
 Layers are added only when there is real code that needs them.
 
 ### Planned assistant flow
 
-> **Planned — not implemented.** This is the intended end-to-end design; none of it
-> exists yet.
+> **Planned — mostly not implemented.** This is the intended end-to-end design. So
+> far only the text path exists (authenticated text request → FastAPI → Foundry model
+> → text reply); speech, agents and tool calling do not.
 
 ```text
 Flutter mobile app
@@ -139,7 +152,7 @@ Future Android integration (planned, not implemented):
 | Backend  | Python 3.12+, FastAPI, Pydantic, Uvicorn                                        |
 | Database | SQLAlchemy 2.x, Alembic; SQLite locally, PostgreSQL-compatible                  |
 | Security | Argon2id (`argon2-cffi`), opaque server-side sessions with Bearer tokens        |
-| AI       | Microsoft Azure / Microsoft Foundry _(planned)_                                 |
+| AI       | Microsoft Foundry (Responses API), Microsoft Entra ID (`azure-identity`)        |
 | Testing  | pytest and Ruff (backend); flutter test and flutter analyze (mobile)            |
 
 ## Local development
@@ -152,7 +165,7 @@ Future Android integration (planned, not implemented):
 | Sprint | Focus                                                        | Status      |
 | ------ | ------------------------------------------------------------ | ----------- |
 | 01     | Foundation, authentication API and Flutter client            | Complete    |
-| 02     | AI core with Microsoft Foundry                               | Planned     |
+| 02     | Basic AI assistant: Microsoft Foundry text, then speech      | In progress |
 | 03     | Agent core and tool calling                                  | Planned     |
 | 04     | Trello integration                                           | Planned     |
 | 05     | Excel / Microsoft Graph integration                          | Planned     |
