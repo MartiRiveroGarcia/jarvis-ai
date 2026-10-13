@@ -9,6 +9,7 @@ from app import models  # noqa: F401  (registers all models on Base.metadata)
 from app.config.settings import Settings, get_settings
 from app.database.base import Base
 from app.database.session import get_engine, get_session_factory
+from app.dependencies import get_foundry_client
 from app.main import create_app
 
 
@@ -18,11 +19,28 @@ def reset_database_caches() -> None:
     get_session_factory.cache_clear()
     get_engine.cache_clear()
     get_settings.cache_clear()
+    get_foundry_client.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def ignore_local_foundry_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never let a developer's backend/.env or shell configure the real Foundry.
+
+    Without this, any test using the real dependencies could call Azure.
+    """
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    for name in (
+        "JARVIS_FOUNDRY_PROJECT_ENDPOINT",
+        "JARVIS_FOUNDRY_MODEL",
+        "JARVIS_FOUNDRY_TIMEOUT_SECONDS",
+        "JARVIS_FOUNDRY_MAX_OUTPUT_TOKENS",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture(autouse=True)
 def reset_cached_dependencies() -> Iterator[None]:
-    """Give every test fresh settings, engine and session factory.
+    """Give every test fresh settings, engine, session factory and Foundry client.
 
     Production code caches these once per process; without this reset, one test's
     database configuration could leak into the next.
