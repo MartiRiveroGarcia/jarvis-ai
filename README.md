@@ -34,15 +34,24 @@ Mobile (Flutter, Android-first):
 
 **Sprint 02 — Basic AI assistant (in progress).**
 
-Backend:
+Done:
 
 - [x] Microsoft Foundry integration: Responses API client authenticated with
       Microsoft Entra ID (no API keys), optional and created lazily
 - [x] Authenticated text assistant endpoint: `POST /api/assistant/respond`
       (one stateless request, one model reply)
+- [x] Flutter assistant API client, and a temporary debug-only text screen to test it
+- [x] Text round trip Flutter → FastAPI → Microsoft Foundry → Flutter, verified end to
+      end on a physical Android device against the local FastAPI backend and
+      Microsoft Foundry deployment
 
-Upcoming in Sprint 02: speech-to-text and text-to-speech with Azure AI Speech, and
-push-to-talk in the mobile app. The app's voice button is still visual only.
+Upcoming in Sprint 02:
+
+- [ ] Speech-to-text with Azure AI Speech
+- [ ] Text-to-speech with Azure AI Speech
+- [ ] Push-to-talk in the mobile app
+
+The app's voice button is still visual only; voice interaction is not implemented.
 
 Not implemented yet: voice interaction, AI agents, tools, RAG and Android assistant
 integration — see the roadmap.
@@ -131,10 +140,13 @@ Details: [backend/README.md](backend/README.md#authentication-api).
 The Flutter app is deliberately minimal and voice-first:
 
 - Login and registration screens.
-- A main assistant screen centred around a voice button. In Sprint 01 the button is
+- A main assistant screen centred around a voice button. The button is still
   **visual only**: it records nothing, requests no microphone permission and calls no
   service.
 - A small settings screen with account details and sign out.
+- A temporary, **debug-only** developer screen (Settings → Developer) sends text to
+  the assistant and shows the reply. It exists only to test the backend round trip
+  before speech and will be replaced by the voice flow.
 
 Future Android integration (planned, not implemented):
 

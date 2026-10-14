@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../../app/app_info.dart';
+import '../../../app/router.dart';
+import '../../../core/providers.dart';
 import '../../auth/application/auth_controller.dart';
 import '../../auth/application/auth_state.dart';
 
@@ -78,6 +81,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final user = auth is AuthAuthenticated ? auth.user : null;
     final theme = Theme.of(context);
     final version = AppInfo.version;
+    final developerTools = ref.watch(developerToolsEnabledProvider);
 
     return Scaffold(
       key: const Key('settings-screen'),
@@ -104,6 +108,16 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   title: const Text(AppInfo.name),
                   subtitle: version == null ? null : Text('Version $version'),
                 ),
+                if (developerTools) ...[
+                  const _SectionHeader('Developer'),
+                  ListTile(
+                    key: const Key('developer-text-assistant'),
+                    leading: const Icon(Icons.science_outlined),
+                    title: const Text('Developer: ask Jarvis by text'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () => context.push(Routes.developerTextAssistant),
+                  ),
+                ],
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 24, 16, 16),
                   child: OutlinedButton.icon(

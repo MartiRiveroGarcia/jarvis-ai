@@ -35,17 +35,21 @@ class ApiClient {
 
   /// [bearerToken] sends that token instead of the stored one. It exists for one
   /// case: revoking a freshly issued session that could not be stored.
+  ///
+  /// [timeout] overrides the client's default [timeout] for this request only.
   Future<JsonObject?> post(
     String path, {
     JsonObject? body,
     bool authenticated = false,
     String? bearerToken,
+    Duration? timeout,
   }) => _send(
     'POST',
     path,
     body: body,
     authenticated: authenticated,
     bearerToken: bearerToken,
+    timeout: timeout,
   );
 
   /// Joins a validated [path] onto the base URL, preserving the base path.
@@ -87,7 +91,9 @@ class ApiClient {
     required bool authenticated,
     JsonObject? body,
     String? bearerToken,
+    Duration? timeout,
   }) async {
+    final limit = timeout ?? this.timeout;
     final url = resolve(path);
     final headers = <String, String>{'Accept': 'application/json'};
     if (body != null) {
@@ -115,8 +121,8 @@ class ApiClient {
 
     final http.Response response;
     try {
-      final streamed = await _httpClient.send(request).timeout(timeout);
-      response = await http.Response.fromStream(streamed).timeout(timeout);
+      final streamed = await _httpClient.send(request).timeout(limit);
+      response = await http.Response.fromStream(streamed).timeout(limit);
     } on TimeoutException {
       throw NetworkException(method: method, path: path, isTimeout: true);
     } on http.ClientException {
@@ -172,6 +178,7 @@ class ApiClient {
         method: method,
         path: path,
         statusCode: status,
+        detail: detail,
       ),
       _ => throw UnexpectedResponseException(
         method: method,

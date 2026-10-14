@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 
@@ -28,3 +29,7 @@ final apiClientProvider = Provider<ApiClient>(
     tokenStore: ref.watch(tokenStoreProvider),
   ),
 );
+
+/// Developer-only tools, such as the temporary text assistant screen. Always
+/// false in profile and release builds; tests may override it.
+final developerToolsEnabledProvider = Provider<bool>((ref) => kDebugMode);
