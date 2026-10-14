@@ -54,6 +54,12 @@ class SpeechInvalidAudioError(SpeechError):
     message = "The audio is not a supported WAV recording"
 
 
+class SpeechInvalidTextError(SpeechError):
+    """The text cannot be synthesized. Raised before Azure is used."""
+
+    message = "The text cannot be synthesized"
+
+
 class SpeechNoSpeechError(SpeechError):
     message = "No speech was recognized"
 

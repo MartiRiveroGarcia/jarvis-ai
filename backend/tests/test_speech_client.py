@@ -24,6 +24,7 @@ from app.integrations.speech.errors import (
     SpeechBadResponseError,
     SpeechError,
     SpeechInvalidAudioError,
+    SpeechInvalidTextError,
     SpeechNoSpeechError,
     SpeechNotConfiguredError,
     SpeechRateLimitedError,
@@ -33,6 +34,7 @@ from app.integrations.speech.errors import (
 
 ENDPOINT = "https://secret-speech-host.cognitiveservices.azure.com"
 LANGUAGE = "ca-ES"
+VOICE = "ca-ES-EnricNeural"
 SESSION_ID = "0123456789abcdef0123456789abcdef"
 SECRET_TRANSCRIPT = "my private dictated note"
 
@@ -175,6 +177,8 @@ def make_client(
     *,
     credentials: FakeCredentialFactory | None = None,
     timeout: float = 5,
+    synthesis: "FakeSynthesisSdk | None" = None,
+    tts_timeout: float = 5,
 ) -> tuple[AzureSpeechClient, FakeSdk, FakeCredentialFactory]:
     sdk = sdk or FakeSdk()
     credentials = credentials or FakeCredentialFactory()
@@ -182,8 +186,11 @@ def make_client(
         endpoint=ENDPOINT + "/",
         recognition_language=LANGUAGE,
         stt_timeout_seconds=timeout,
+        voice=VOICE,
+        tts_timeout_seconds=tts_timeout,
         credential_factory=credentials,
         open_recognition=sdk,
+        open_synthesis=synthesis or FakeSynthesisSdk(),
     )
     return client, sdk, credentials
 
@@ -509,6 +516,8 @@ def test_from_settings_uses_the_speech_settings() -> None:
     assert client._endpoint == "https://jarvis-speech-test.cognitiveservices.azure.com"
     assert client._recognition_language == "es-ES"
     assert client._stt_timeout_seconds == 12
+    assert client._voice == "ca-ES-EnricNeural"
+    assert client._tts_timeout_seconds == 20
     assert client._credential is None
 
 
@@ -543,6 +552,8 @@ def test_a_native_sdk_that_cannot_load_is_an_sdk_error(monkeypatch: pytest.Monke
         endpoint=ENDPOINT,
         recognition_language=LANGUAGE,
         stt_timeout_seconds=5,
+        voice=VOICE,
+        tts_timeout_seconds=5,
         credential_factory=FakeCredentialFactory(),
     )
 
@@ -623,3 +634,422 @@ def test_errors_and_client_never_contain_sensitive_values() -> None:
             assert "secret-speech-host" not in text
             assert SECRET_TRANSCRIPT not in text
             assert "\x01\x02" not in text
+
+
+# ===========================================================================================
+# Text-to-speech
+# ===========================================================================================
+
+MP3 = b"\xff\xf3\x84\xc4" + bytes(range(256)) * 4  # MP3 frame sync + payload
+SECRET_TEXT = "my private reply text"
+
+
+class Outcome:
+    """Stand-in for _sdk.SynthesisOutcome (the client only reads its attributes)."""
+
+    def __init__(self, kind: str, audio: bytes = b"", cancellation: Any = None) -> None:
+        self.kind = kind
+        self.audio = audio
+        self.cancellation = cancellation
+
+
+def completed(audio: bytes = MP3) -> Outcome:
+    return Outcome("completed", audio=audio)
+
+
+def canceled(code: str | None, session_id: str | None = SESSION_ID) -> Outcome:
+    return Outcome("canceled", cancellation=Info(False, code, session_id))
+
+
+class FakeSynthesisSession:
+    def __init__(self, text: str, outcome: Any, **behaviour: Any) -> None:
+        self.text = text
+        self.outcome = outcome
+        self.behaviour = behaviour
+        self.calls: list[str] = []
+        self.release = threading.Event()
+
+    def synthesize(self) -> Any:
+        self.calls.append("synthesize")
+        if delay := self.behaviour.get("delay"):
+            time.sleep(delay)
+        if error := self.behaviour.get("synthesize_error"):
+            raise error
+        if self.behaviour.get("hang"):
+            self.release.wait(10)
+        return self.outcome(self.text) if callable(self.outcome) else self.outcome
+
+    def stop(self) -> None:
+        self.calls.append("stop")
+        if error := self.behaviour.get("stop_error"):
+            raise error
+        if self.behaviour.get("hang_stop"):
+            self.release.wait(10)
+
+    def close(self) -> None:
+        self.calls.append("close")
+        if error := self.behaviour.get("close_error"):
+            raise error
+
+
+class FakeSynthesisSdk:
+    """Stands in for _sdk.open_synthesis; records every call."""
+
+    def __init__(self, outcome: Any = None, **behaviour: Any) -> None:
+        self.outcome = outcome if outcome is not None else completed()
+        self.behaviour = behaviour
+        self.opened: list[dict[str, Any]] = []
+        self.sessions: list[FakeSynthesisSession] = []
+        self.lock = threading.Lock()
+
+    def __call__(self, **kwargs: Any) -> FakeSynthesisSession:
+        if error := self.behaviour.get("open_error"):
+            raise error
+        behaviour = self.behaviour
+        if per_text := self.behaviour.get("per_text"):
+            behaviour = {**behaviour, **per_text(kwargs["text"])}
+        session = FakeSynthesisSession(kwargs["text"], self.outcome, **behaviour)
+        with self.lock:
+            self.opened.append(kwargs)
+            self.sessions.append(session)
+        return session
+
+
+def synthesize(synthesis: FakeSynthesisSdk, text: str = "Hola", **kwargs: Any) -> bytes:
+    client, _, _ = make_client(synthesis=synthesis, **kwargs)
+    return client.synthesize(text)
+
+
+def synthesis_failure(
+    synthesis: FakeSynthesisSdk, text: str = "Hola", **kwargs: Any
+) -> SpeechError:
+    with pytest.raises(SpeechError) as exc_info:
+        synthesize(synthesis, text, **kwargs)
+    return exc_info.value
+
+
+# --- input ------------------------------------------------------------------------------------
+
+
+def test_text_is_trimmed_and_sent_with_voice_endpoint_and_credential() -> None:
+    synthesis = FakeSynthesisSdk()
+    client, _, credentials = make_client(synthesis=synthesis)
+
+    client.synthesize("  Bon dia, sóc Jarvis.\n ")
+
+    [opened] = synthesis.opened
+    assert opened == {
+        "endpoint": ENDPOINT,
+        "credential": credentials.credential,
+        "voice": VOICE,
+        "text": "Bon dia, sóc Jarvis.",
+    }
+
+
+@pytest.mark.parametrize(
+    ("text", "reason"),
+    [
+        ("", "empty"),
+        ("   \n\t ", "empty"),
+        ("x" * 5001, "too_long"),
+        ("🤖" * 5001, "too_long"),
+        (None, "invalid_type"),
+        (b"bytes text", "invalid_type"),
+        (42, "invalid_type"),
+        (["Hola"], "invalid_type"),
+    ],
+)
+def test_invalid_text_touches_neither_credential_nor_sdk(text: object, reason: str) -> None:
+    synthesis = FakeSynthesisSdk()
+    client, _, credentials = make_client(synthesis=synthesis)
+
+    with pytest.raises(SpeechInvalidTextError) as exc_info:
+        client.synthesize(text)  # type: ignore[arg-type]
+
+    assert exc_info.value.reason == reason
+    assert credentials.calls == 0
+    assert synthesis.opened == []
+
+
+@pytest.mark.parametrize("text", ["x" * 5000, "🤖" * 5000, "  " + "x" * 5000 + "  "])
+def test_5000_code_points_are_accepted(text: str) -> None:
+    synthesis = FakeSynthesisSdk()
+
+    synthesize(synthesis, text)
+
+    sent = synthesis.opened[0]["text"]
+    assert len(sent) == 5000  # Python counts code points: an emoji is one
+
+
+# --- success --------------------------------------------------------------------------------
+
+
+def test_the_exact_mp3_bytes_are_returned() -> None:
+    audio = synthesize(FakeSynthesisSdk(completed(MP3)))
+
+    assert audio == MP3
+    assert isinstance(audio, bytes)
+
+
+def test_success_closes_but_does_not_stop() -> None:
+    synthesis = FakeSynthesisSdk()
+
+    synthesize(synthesis)
+
+    assert synthesis.sessions[0].calls == ["synthesize", "close"]
+
+
+def test_empty_audio_is_a_bad_response() -> None:
+    synthesis = FakeSynthesisSdk(completed(b""))
+
+    error = synthesis_failure(synthesis)
+
+    assert type(error) is SpeechBadResponseError
+    assert error.reason == "empty_audio"
+    assert synthesis.sessions[0].calls == ["synthesize", "close"]
+
+
+@pytest.mark.parametrize("outcome", [Outcome("unexpected"), Outcome("canceled", cancellation=None)])
+def test_unexpected_results_are_bad_responses(outcome: Outcome) -> None:
+    synthesis = FakeSynthesisSdk(outcome)
+
+    error = synthesis_failure(synthesis)
+
+    assert type(error) is SpeechBadResponseError
+    assert error.reason == "unexpected_result"
+    assert synthesis.sessions[0].calls == ["synthesize", "close"]
+
+
+# --- cancellations --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("code", "expected"), EXPECTED.items())
+def test_synthesis_cancellations_use_the_shared_mapping(
+    code: str | None, expected: tuple[type, str]
+) -> None:
+    synthesis = FakeSynthesisSdk(canceled(code))
+
+    error = synthesis_failure(synthesis)
+
+    assert type(error) is expected[0]
+    assert error.reason == expected[1]
+    assert error.code == code if code is not None else error.code is None
+    assert error.session_id == SESSION_ID
+    assert synthesis.sessions[0].calls == ["synthesize", "close"]
+
+
+def test_service_timeout_cancellation() -> None:
+    error = synthesis_failure(FakeSynthesisSdk(canceled("ServiceTimeout")))
+
+    assert type(error) is SpeechTimeoutError
+    assert error.reason == "service_timeout"
+
+
+# --- failures and cleanup ---------------------------------------------------------------------
+
+
+def test_synthesis_a_failing_open_is_an_sdk_error() -> None:
+    error = synthesis_failure(FakeSynthesisSdk(open_error=OSError("secret native text")))
+
+    assert type(error) is SpeechUnavailableError
+    assert error.reason == "sdk_error"
+    assert error.__cause__ is None
+
+
+def test_a_failing_synthesis_is_an_sdk_error_with_best_effort_stop() -> None:
+    synthesis = FakeSynthesisSdk(synthesize_error=RuntimeError("secret sdk text"))
+
+    error = synthesis_failure(synthesis)
+
+    assert type(error) is SpeechUnavailableError
+    assert error.reason == "sdk_error"
+    assert error.__cause__ is None
+    assert error.__suppress_context__ is True
+    assert synthesis.sessions[0].calls == ["synthesize", "stop", "close"]
+
+
+def test_a_failing_synthesis_and_a_failing_stop_remain_an_sdk_error() -> None:
+    synthesis = FakeSynthesisSdk(
+        synthesize_error=RuntimeError("synthesis failed"), stop_error=RuntimeError("stop failed")
+    )
+
+    error = synthesis_failure(synthesis)
+
+    assert error.reason == "sdk_error"
+    assert synthesis.sessions[0].calls == ["synthesize", "stop", "close"]
+
+
+def test_timeout_stops_and_closes() -> None:
+    synthesis = FakeSynthesisSdk(hang=True)
+    started = time.monotonic()
+
+    error = synthesis_failure(synthesis, tts_timeout=0.3)
+
+    elapsed = time.monotonic() - started
+    assert type(error) is SpeechTimeoutError
+    assert error.reason == "timeout"
+    assert 0.3 <= elapsed < 0.3 + 0.3 + 0.4
+    assert synthesis.sessions[0].calls == ["synthesize", "stop", "close"]
+    synthesis.sessions[0].release.set()
+
+
+def test_synthesis_timeout_with_a_failing_stop_remains_a_timeout() -> None:
+    synthesis = FakeSynthesisSdk(hang=True, stop_error=RuntimeError("stop failed"))
+
+    error = synthesis_failure(synthesis, tts_timeout=0.2)
+
+    assert type(error) is SpeechTimeoutError
+    assert error.reason == "timeout"
+    synthesis.sessions[0].release.set()
+
+
+def test_timeout_with_a_hanging_stop_is_bounded_by_the_grace() -> None:
+    synthesis = FakeSynthesisSdk(hang=True, hang_stop=True)
+    started = time.monotonic()
+
+    error = synthesis_failure(synthesis, tts_timeout=0.2)
+
+    assert error.reason == "timeout"
+    assert time.monotonic() - started < 0.2 + 0.3 + 0.4  # deadline + grace + margin
+    assert synthesis.sessions[0].calls == ["synthesize", "stop", "close"]
+    synthesis.sessions[0].release.set()
+
+
+@pytest.mark.parametrize(
+    ("outcome", "behaviour", "expected"),
+    [
+        (completed(), {}, None),
+        (canceled("TooManyRequests"), {}, "too_many_requests"),
+        (completed(b""), {}, "empty_audio"),
+        (completed(), {"hang": True}, "timeout"),
+        (completed(), {"synthesize_error": RuntimeError("x")}, "sdk_error"),
+    ],
+)
+def test_close_errors_never_replace_the_outcome(
+    outcome: Outcome, behaviour: dict[str, Any], expected: str | None
+) -> None:
+    synthesis = FakeSynthesisSdk(outcome, close_error=RuntimeError("close failed"), **behaviour)
+
+    if expected is None:
+        assert synthesize(synthesis, tts_timeout=0.2) == MP3
+    else:
+        assert synthesis_failure(synthesis, tts_timeout=0.2).reason == expected
+    assert synthesis.sessions[0].calls[-1] == "close"
+    synthesis.sessions[0].release.set()
+
+
+def test_success_is_not_delayed_by_the_stop_grace() -> None:
+    synthesis = FakeSynthesisSdk(hang_stop=True)  # stop would hang, but is never called
+    started = time.monotonic()
+
+    assert synthesize(synthesis) == MP3
+
+    assert time.monotonic() - started < 0.2
+
+
+def test_a_failing_credential_is_a_credential_error_for_synthesis() -> None:
+    synthesis = FakeSynthesisSdk()
+    client, _, _ = make_client(
+        synthesis=synthesis, credentials=FakeCredentialFactory(error=ValueError("secret"))
+    )
+
+    with pytest.raises(SpeechUnavailableError) as exc_info:
+        client.synthesize("Hola")
+
+    assert exc_info.value.reason == "credential"
+    assert synthesis.opened == []
+
+
+# --- shared credential ---------------------------------------------------------------------
+
+
+def test_synthesis_creates_the_credential_once() -> None:
+    client, _, credentials = make_client()
+    assert credentials.calls == 0
+
+    client.synthesize("Hola")
+    client.synthesize("Adéu")
+
+    assert credentials.calls == 1
+
+
+@pytest.mark.parametrize("order", ["stt-then-tts", "tts-then-stt"])
+def test_speech_to_text_and_text_to_speech_share_one_credential(order: str) -> None:
+    synthesis = FakeSynthesisSdk()
+    client, recognition, credentials = make_client(synthesis=synthesis)
+
+    if order == "stt-then-tts":
+        client.transcribe(make_wav())
+        client.synthesize("Hola")
+    else:
+        client.synthesize("Hola")
+        client.transcribe(make_wav())
+
+    assert credentials.calls == 1
+    assert recognition.opened[0]["credential"] is synthesis.opened[0]["credential"]
+
+
+# --- concurrency ----------------------------------------------------------------------------
+
+
+def test_concurrent_syntheses_are_isolated() -> None:
+    def per_text(text: str) -> dict[str, Any]:
+        return {"hang": True} if text == "slow" else {"delay": 0.05}
+
+    synthesis = FakeSynthesisSdk(lambda text: completed(b"MP3:" + text.encode()), per_text=per_text)
+    client, _, credentials = make_client(synthesis=synthesis, tts_timeout=0.5)
+    texts = [f"text {i}" for i in range(8)] + ["slow"]
+    results: dict[str, object] = {}
+    barrier = threading.Barrier(len(texts))
+
+    def run(text: str) -> None:
+        barrier.wait()
+        try:
+            results[text] = client.synthesize(text)
+        except SpeechError as error:
+            results[text] = error
+
+    threads = [threading.Thread(target=run, args=(text,)) for text in texts]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(10)
+
+    for text in texts[:-1]:
+        assert results[text] == b"MP3:" + text.encode()
+    assert isinstance(results["slow"], SpeechTimeoutError)
+    assert credentials.calls == 1
+    assert len(synthesis.sessions) == len(texts)
+    for session in synthesis.sessions:
+        session.release.set()
+
+
+# --- nothing sensitive --------------------------------------------------------------------------
+
+
+def test_synthesis_errors_never_contain_text_audio_or_endpoint() -> None:
+    cases = [
+        FakeSynthesisSdk(canceled("Forbidden")),
+        FakeSynthesisSdk(completed(b"")),
+        FakeSynthesisSdk(synthesize_error=RuntimeError(SECRET_TEXT)),
+        FakeSynthesisSdk(hang=True),
+    ]
+    for synthesis in cases:
+        error = synthesis_failure(synthesis, SECRET_TEXT, tts_timeout=0.2)
+        for text in (str(error), repr(error), repr(vars(error))):
+            assert SECRET_TEXT not in text
+            assert "secret-speech-host" not in text
+            assert "\\xff\\xf3" not in text
+        for session in synthesis.sessions:
+            session.release.set()
+
+    # Letters only, so it would also pass the error's code validation if misused.
+    for secret in (SECRET_TEXT * 300, "Confidencial" * 500, " ", 42):
+        with pytest.raises(SpeechInvalidTextError) as exc_info:
+            make_client()[0].synthesize(secret)  # type: ignore[arg-type]
+        error = exc_info.value
+        rendered = str(error) + repr(error) + repr(vars(error))
+        assert SECRET_TEXT not in rendered
+        assert "Confidencial" not in rendered
+        assert error.code is None
+        assert error.session_id is None

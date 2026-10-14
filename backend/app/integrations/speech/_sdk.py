@@ -4,14 +4,15 @@ The ONLY module that imports azure.cognitiveservices.speech, and it is itself
 imported lazily by the client on first use, so neither app startup nor importing
 app.integrations.speech loads the native library.
 
-It turns SDK events into calls on a RecognitionSink with small, content-safe
-values. It never reads the SDK's cancellation error details.
+It turns SDK events and results into small, content-safe values: calls on a
+RecognitionSink for speech-to-text and a SynthesisOutcome for text-to-speech. It
+never reads the SDK's cancellation error details.
 """
 
 from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import dataclass
-from typing import Any, Protocol
+from dataclasses import dataclass, field
+from typing import Any, Literal, Protocol
 
 import azure.cognitiveservices.speech as speechsdk
 from azure.core.credentials import TokenCredential
@@ -42,6 +43,24 @@ class RecognitionSession(Protocol):
     def close(self) -> None: ...
 
 
+@dataclass(frozen=True)
+class SynthesisOutcome:
+    kind: Literal["completed", "canceled", "unexpected"]
+    audio: bytes = field(default=b"", repr=False)  # only for "completed"
+    cancellation: CancellationInfo | None = None  # only for "canceled"
+
+
+class SynthesisSession(Protocol):
+    def synthesize(self) -> SynthesisOutcome: ...
+    def stop(self) -> None: ...
+    def close(self) -> None: ...
+
+
+def _speech_config(endpoint: str, credential: TokenCredential) -> Any:
+    # Microsoft Entra ID: the SDK requests and refreshes tokens from the credential.
+    return speechsdk.SpeechConfig(token_credential=credential, endpoint=endpoint + "/")
+
+
 def open_recognition(
     *,
     endpoint: str,
@@ -55,8 +74,7 @@ def open_recognition(
         samples_per_second=SAMPLE_RATE, bits_per_sample=BITS_PER_SAMPLE, channels=CHANNELS
     )
     stream = speechsdk.audio.PushAudioInputStream(stream_format=stream_format)
-    # Microsoft Entra ID: the SDK requests and refreshes tokens from the credential.
-    config = speechsdk.SpeechConfig(token_credential=credential, endpoint=endpoint + "/")
+    config = _speech_config(endpoint, credential)
     config.speech_recognition_language = language
     recognizer = speechsdk.SpeechRecognizer(
         speech_config=config, audio_config=speechsdk.audio.AudioConfig(stream=stream)
@@ -70,6 +88,42 @@ def open_recognition(
         stream.write(pcm[offset : offset + PCM_CHUNK_BYTES])
     stream.close()
     return _SdkRecognitionSession(recognizer, stream)
+
+
+def open_synthesis(
+    *,
+    endpoint: str,
+    credential: TokenCredential,
+    voice: str,
+    text: str,
+) -> SynthesisSession:
+    """Prepare plain-text synthesis of [text]. Connects nothing until synthesize()."""
+    config = _speech_config(endpoint, credential)
+    config.speech_synthesis_voice_name = voice
+    config.set_speech_synthesis_output_format(
+        speechsdk.SpeechSynthesisOutputFormat.Audio24Khz48KBitRateMonoMp3
+    )
+    # audio_config=None is required: the SDK default plays on the default speaker.
+    # With None, the audio exists only in the result, in memory.
+    synthesizer = speechsdk.SpeechSynthesizer(speech_config=config, audio_config=None)
+    return _SdkSynthesisSession(synthesizer, text)
+
+
+def synthesis_outcome(result: Any) -> SynthesisOutcome:
+    if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
+        return SynthesisOutcome("completed", audio=bytes(result.audio_data or b""))
+    if result.reason == speechsdk.ResultReason.Canceled:
+        details = result.cancellation_details  # only .reason and .error_code are read
+        code = details.error_code
+        return SynthesisOutcome(
+            "canceled",
+            cancellation=CancellationInfo(
+                end_of_stream=False,
+                code=code.name if isinstance(code, speechsdk.CancellationErrorCode) else None,
+                session_id=getattr(result, "result_id", None),
+            ),
+        )
+    return SynthesisOutcome("unexpected")
 
 
 def translate_recognized(evt: Any, sink: RecognitionSink) -> None:
@@ -129,3 +183,26 @@ class _SdkRecognitionSession:
         if stream is not None:
             with suppress(Exception):
                 stream.close()
+
+
+class _SdkSynthesisSession:
+    def __init__(self, synthesizer: Any, text: str) -> None:
+        self._synthesizer = synthesizer
+        self._text = text
+        self._closed = False
+
+    def synthesize(self) -> SynthesisOutcome:
+        return synthesis_outcome(self._synthesizer.speak_text_async(self._text).get())
+
+    def stop(self) -> None:
+        synthesizer = self._synthesizer
+        if synthesizer is not None:
+            synthesizer.stop_speaking_async().get()
+
+    def close(self) -> None:
+        """Release the SDK objects and the text. Idempotent; never raises."""
+        if self._closed:
+            return
+        self._closed = True
+        self._synthesizer = None
+        self._text = ""
