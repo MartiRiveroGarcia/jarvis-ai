@@ -280,7 +280,7 @@ def test_upstream_failure_logs_one_warning_with_safe_fields(
     assert record.levelno == logging.WARNING
     assert record.getMessage() == (
         "assistant request failed: error=FoundryUnavailableError reason=forbidden "
-        f"status_code=403 request_id=req-123 input_length={len(MESSAGE)}"
+        "status_code=403 request_id=req-123"
     )
     assert record.exc_info is None
 
@@ -315,7 +315,7 @@ def test_not_configured_logs_at_info(caplog: pytest.LogCaptureFixture) -> None:
     assert record.levelno == logging.INFO
     assert record.getMessage() == (
         "assistant request failed: error=FoundryNotConfiguredError reason=not_configured "
-        f"status_code=None request_id=None input_length={len(MESSAGE)}"
+        "status_code=None request_id=None"
     )
 
 
@@ -360,3 +360,32 @@ def test_log_fields_are_sanitised(
     [record] = records(caplog)
     assert expected in record.getMessage()
     assert "INJECTED" not in record.getMessage()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        FoundryUnavailableError(reason="forbidden", status_code=403, request_id="req-1"),
+        FoundryTimeoutError(reason="timeout"),
+        FoundryNotConfiguredError(),
+    ],
+)
+def test_logs_carry_nothing_derived_from_the_input(
+    caplog: pytest.LogCaptureFixture, error: FoundryError
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="jarvis.assistant")
+    messages = ["Hi", "a much longer private message " * 37, "🤖" * 1234]
+
+    for message in messages:
+        with pytest.raises(AssistantError):
+            service_for(FakeGenerator(error=error)).respond(a_user(), message)
+
+    lines = [record.getMessage() for record in records(caplog)]
+    # Identical whatever the input: no length or content leaks into the log.
+    assert len(lines) == len(messages)
+    assert len(set(lines)) == 1
+    assert "input_length" not in lines[0]
+    for message in messages:
+        assert message not in lines[0]
+        assert str(len(message)) not in lines[0]
+    assert lines[0].startswith(f"assistant request failed: error={type(error).__name__} ")

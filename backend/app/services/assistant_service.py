@@ -64,7 +64,7 @@ class AssistantService:
             generator = self._generator_provider()
             return generator.generate(instructions=JARVIS_INSTRUCTIONS, user_input=message)
         except FoundryError as error:
-            _log_failure(error, input_length=len(message))
+            _log_failure(error)
             raise _to_domain_error(error) from None
 
 
@@ -87,8 +87,12 @@ def _retry_after_seconds(retry_after: float | None) -> int | None:
     return math.ceil(min(retry_after, MAX_RETRY_AFTER_SECONDS))
 
 
-def _log_failure(error: FoundryError, *, input_length: int) -> None:
-    """Log one line of content-free metadata; never the message, reply or SDK details."""
+def _log_failure(error: FoundryError) -> None:
+    """Log one line of content-free metadata.
+
+    Never the message, reply, SDK details, or anything derived from the input (such
+    as its length): the input may be a speech transcript.
+    """
     # Not being configured is a local state, not an upstream fault.
     level = logging.INFO if isinstance(error, FoundryNotConfiguredError) else logging.WARNING
     reason = error.reason if _SAFE_REASON.fullmatch(error.reason) else "invalid"
@@ -97,10 +101,9 @@ def _log_failure(error: FoundryError, *, input_length: int) -> None:
         request_id = "invalid"
     logger.log(
         level,
-        "assistant request failed: error=%s reason=%s status_code=%s request_id=%s input_length=%d",
+        "assistant request failed: error=%s reason=%s status_code=%s request_id=%s",
         type(error).__name__,
         reason,
         error.status_code,
         request_id,
-        input_length,
     )

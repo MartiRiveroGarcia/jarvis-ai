@@ -291,6 +291,14 @@ def test_logs_never_contain_content_or_sizes(caplog: pytest.LogCaptureFixture) -
     everything = caplog.text + repr([vars(record) for record in caplog.records])
     for secret in ("secret-recording", TRANSCRIPT, REPLY, "secret-mp3", "private-user"):
         assert secret not in everything
+    # The assistant's own failure line (also emitted on the voice path) has no length.
+    assistant = [r.getMessage() for r in caplog.records if r.name == "jarvis.assistant"]
+    assert assistant == [
+        "assistant request failed: error=FoundryTimeoutError reason=timeout "
+        "status_code=None request_id=None"
+    ]
+    assert "input_length" not in everything
+    assert str(len(TRANSCRIPT)) not in " ".join(assistant)
     # No sizes or durations from the voice logger.
     voice = " ".join(record.getMessage() for record in voice_records(caplog))
     assert voice
