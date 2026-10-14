@@ -20,6 +20,16 @@ Environment = Literal["development", "test", "production"]
 _FOUNDRY_PROJECT_PATH = re.compile(r"/api/projects/(?!\.{1,2}$)[A-Za-z0-9._~-]+")
 # Azure deployment names: letters, digits, dots, hyphens and underscores.
 _FOUNDRY_DEPLOYMENT_NAME = re.compile(r"[A-Za-z0-9._-]{1,64}")
+# An Azure Speech custom-domain host: exactly one DNS label before the suffix.
+# Microsoft Entra ID authentication requires the custom domain.
+_SPEECH_CUSTOM_DOMAIN_HOST = re.compile(
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.cognitiveservices\.azure\.com"
+)
+# Speech locales such as ca-ES, en-US or zh-Hans-CN.
+_SPEECH_LOCALE = re.compile(r"[a-z]{2,3}(?:-[A-Z][a-z]{3})?-[A-Z]{2}")
+# Voice names such as ca-ES-AlbaNeural or en-US-Ava:DragonHDLatestNeural. The
+# restricted alphabet also keeps the name safe to place in an SSML attribute.
+_SPEECH_VOICE = re.compile(r"[a-z]{2,3}(?:-[A-Z][a-z]{3})?-[A-Z]{2}-[A-Za-z0-9:]{1,64}")
 
 
 class Settings(BaseSettings):
@@ -61,6 +71,16 @@ class Settings(BaseSettings):
     foundry_model: str | None = None
     foundry_timeout_seconds: int = Field(default=25, ge=1, le=120)
     foundry_max_output_tokens: int = Field(default=2000, ge=16, le=16384)
+
+    # Azure AI Speech (optional): speech-to-text and text-to-speech. Unset endpoint
+    # means Speech is disabled. Microsoft Entra ID only, through the resource's
+    # custom domain; there is deliberately no key or region setting.
+    # Not a credential, but kept out of repr so it does not end up in logs.
+    speech_endpoint: str | None = Field(default=None, repr=False)
+    speech_recognition_language: str = "ca-ES"
+    speech_voice: str = "ca-ES-AlbaNeural"
+    speech_stt_timeout_seconds: int = Field(default=45, ge=1, le=120)
+    speech_tts_timeout_seconds: int = Field(default=20, ge=1, le=120)
 
     @field_validator("database_url")
     @classmethod
@@ -111,6 +131,52 @@ class Settings(BaseSettings):
             )
         return name
 
+    @field_validator("speech_endpoint")
+    @classmethod
+    def validate_speech_endpoint(cls, value: str | None) -> str | None:
+        """Accept only an https Speech custom-domain endpoint; never echo the value."""
+        if value is None:
+            return None
+        message = "JARVIS_SPEECH_ENDPOINT"
+        try:
+            parts = urlsplit(value.strip())
+            port = parts.port
+        except ValueError:
+            raise ValueError(f"{message} is not a valid URL") from None
+        if parts.scheme.lower() != "https":
+            raise ValueError(f"{message} must be an absolute https URL")
+        if parts.username is not None or parts.password is not None:
+            raise ValueError(f"{message} must not contain credentials")
+        if parts.query or parts.fragment or "?" in value or "#" in value:
+            raise ValueError(f"{message} must not contain a query or fragment")
+        if parts.path not in ("", "/"):
+            raise ValueError(f"{message} must not contain a path")
+        host = (parts.hostname or "").lower()
+        if not _SPEECH_CUSTOM_DOMAIN_HOST.fullmatch(host) or port not in (None, 443):
+            raise ValueError(
+                f"{message} must be a custom-domain endpoint "
+                "(https://<name>.cognitiveservices.azure.com)"
+            )
+        return f"https://{host}"
+
+    @field_validator("speech_recognition_language")
+    @classmethod
+    def validate_speech_recognition_language(cls, value: str) -> str:
+        locale = value.strip()
+        if not _SPEECH_LOCALE.fullmatch(locale):
+            raise ValueError(
+                "JARVIS_SPEECH_RECOGNITION_LANGUAGE must be a locale such as ca-ES or en-US"
+            )
+        return locale
+
+    @field_validator("speech_voice")
+    @classmethod
+    def validate_speech_voice(cls, value: str) -> str:
+        voice = value.strip()
+        if not _SPEECH_VOICE.fullmatch(voice):
+            raise ValueError("JARVIS_SPEECH_VOICE must be a voice name such as ca-ES-AlbaNeural")
+        return voice
+
     @model_validator(mode="after")
     def _foundry_settings_are_complete(self) -> Self:
         if (self.foundry_project_endpoint is None) != (self.foundry_model is None):
@@ -126,6 +192,10 @@ class Settings(BaseSettings):
     @property
     def foundry_configured(self) -> bool:
         return self.foundry_project_endpoint is not None and self.foundry_model is not None
+
+    @property
+    def speech_configured(self) -> bool:
+        return self.speech_endpoint is not None
 
 
 @lru_cache

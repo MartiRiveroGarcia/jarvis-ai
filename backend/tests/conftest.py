@@ -1,3 +1,4 @@
+import os
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -23,19 +24,16 @@ def reset_database_caches() -> None:
 
 
 @pytest.fixture(autouse=True)
-def ignore_local_foundry_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Never let a developer's backend/.env or shell configure the real Foundry.
+def ignore_local_azure_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never let a developer's backend/.env or shell configure real Azure services.
 
-    Without this, any test using the real dependencies could call Azure.
+    Without this, any test using the real dependencies could call Microsoft Foundry
+    or Azure AI Speech.
     """
     monkeypatch.setitem(Settings.model_config, "env_file", None)
-    for name in (
-        "JARVIS_FOUNDRY_PROJECT_ENDPOINT",
-        "JARVIS_FOUNDRY_MODEL",
-        "JARVIS_FOUNDRY_TIMEOUT_SECONDS",
-        "JARVIS_FOUNDRY_MAX_OUTPUT_TOKENS",
-    ):
-        monkeypatch.delenv(name, raising=False)
+    for name in list(os.environ):
+        if name.startswith(("JARVIS_FOUNDRY_", "JARVIS_SPEECH_")):
+            monkeypatch.delenv(name)
 
 
 @pytest.fixture(autouse=True)
