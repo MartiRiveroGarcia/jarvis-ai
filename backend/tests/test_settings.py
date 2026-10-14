@@ -12,6 +12,9 @@ from app.config.settings import BACKEND_DIR, Settings
 
 @pytest.fixture(autouse=True)
 def clear_settings_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in list(os.environ):
+        if name.startswith("JARVIS_SPEECH_"):
+            monkeypatch.delenv(name)
     for name in (
         "JARVIS_APP_NAME",
         "JARVIS_ENVIRONMENT",
@@ -291,10 +294,221 @@ def test_endpoint_is_excluded_from_repr() -> None:
 
 
 def test_there_is_no_api_key_setting() -> None:
-    # Foundry access uses Microsoft Entra ID; keys must never become configuration.
+    # Foundry and Speech use Microsoft Entra ID; keys must never become configuration.
     names = {name.lower() for name in Settings.model_fields}
 
     assert not {name for name in names if "key" in name or "secret" in name}
+
+
+# --- Azure AI Speech --------------------------------------------------------------
+
+SPEECH_ENDPOINT = "https://jarvis-speech-test.cognitiveservices.azure.com"
+
+
+def test_speech_is_optional_and_off_by_default() -> None:
+    settings = _foundry()
+
+    assert settings.speech_endpoint is None
+    assert settings.speech_configured is False
+    assert settings.speech_recognition_language == "ca-ES"
+    assert settings.speech_voice == "ca-ES-EnricNeural"
+    assert settings.speech_stt_timeout_seconds == 45
+    assert settings.speech_tts_timeout_seconds == 20
+
+
+def test_speech_is_configured_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("JARVIS_SPEECH_ENDPOINT", SPEECH_ENDPOINT)
+    monkeypatch.setenv("JARVIS_SPEECH_RECOGNITION_LANGUAGE", " es-ES ")
+    monkeypatch.setenv("JARVIS_SPEECH_VOICE", " es-ES-ElviraNeural ")
+    monkeypatch.setenv("JARVIS_SPEECH_STT_TIMEOUT_SECONDS", "30")
+    monkeypatch.setenv("JARVIS_SPEECH_TTS_TIMEOUT_SECONDS", "10")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.speech_configured is True
+    assert settings.speech_endpoint == SPEECH_ENDPOINT
+    assert settings.speech_recognition_language == "es-ES"
+    assert settings.speech_voice == "es-ES-ElviraNeural"
+    assert settings.speech_stt_timeout_seconds == 30
+    assert settings.speech_tts_timeout_seconds == 10
+
+
+def test_speech_does_not_depend_on_foundry() -> None:
+    settings = _foundry(speech_endpoint=SPEECH_ENDPOINT)
+
+    assert settings.speech_configured is True
+    assert settings.foundry_configured is False
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (SPEECH_ENDPOINT, SPEECH_ENDPOINT),
+        (SPEECH_ENDPOINT + "/", SPEECH_ENDPOINT),
+        (f"  {SPEECH_ENDPOINT}/  ", SPEECH_ENDPOINT),
+        ("HTTPS://Jarvis-Speech-Test.CognitiveServices.Azure.com/", SPEECH_ENDPOINT),
+        ("https://jarvis-speech-test.cognitiveservices.azure.com:443", SPEECH_ENDPOINT),
+        ("https://a.cognitiveservices.azure.com", "https://a.cognitiveservices.azure.com"),
+    ],
+)
+def test_valid_speech_endpoints_are_normalized(raw: str, expected: str) -> None:
+    assert _foundry(speech_endpoint=raw).speech_endpoint == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "",
+        "   ",
+        "not a url",
+        "http://jarvis-speech-test.cognitiveservices.azure.com",
+        "jarvis-speech-test.cognitiveservices.azure.com",
+        "ftp://jarvis-speech-test.cognitiveservices.azure.com",
+        # Wrong hosts: regional endpoints, other Azure services, look-alikes.
+        "https://swedencentral.api.cognitive.microsoft.com",
+        "https://swedencentral.stt.speech.microsoft.com",
+        "https://jarvis.openai.azure.com",
+        "https://jarvis.services.ai.azure.com",
+        "https://cognitiveservices.azure.com",
+        "https://a.b.cognitiveservices.azure.com",
+        "https://jarvis.cognitiveservices.azure.com.evil.example",
+        "https://jarvis-.cognitiveservices.azure.com",
+        "https://-jarvis.cognitiveservices.azure.com",
+        "https://jar_vis.cognitiveservices.azure.com",
+        # A Foundry project URL pasted by mistake.
+        "https://res.services.ai.azure.com/api/projects/proj",
+        # Paths, queries, fragments, credentials and ports.
+        f"{SPEECH_ENDPOINT}/speechtotext",
+        f"{SPEECH_ENDPOINT}/tts/cognitiveservices/v1",
+        f"{SPEECH_ENDPOINT}//",
+        f"{SPEECH_ENDPOINT}?api-version=1",
+        f"{SPEECH_ENDPOINT}/?",
+        f"{SPEECH_ENDPOINT}#section",
+        f"{SPEECH_ENDPOINT}/#",
+        "https://user:s3cret@jarvis-speech-test.cognitiveservices.azure.com",
+        "https://user@jarvis-speech-test.cognitiveservices.azure.com",
+        "https://jarvis-speech-test.cognitiveservices.azure.com:8443",
+        "https://jarvis-speech-test.cognitiveservices.azure.com:notaport",
+    ],
+)
+def test_invalid_speech_endpoints_are_rejected(raw: str) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        _foundry(speech_endpoint=raw)
+
+    assert "JARVIS_SPEECH_ENDPOINT" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "https://user:s3cret@secret-speech.cognitiveservices.azure.com",
+        "http://secret-speech.cognitiveservices.azure.com",
+        "https://secret-speech.cognitiveservices.azure.com/secret-path",
+        "https://secret-speech.cognitiveservices.azure.com?s3cret=1",
+        "https://secret-speech.example.com",
+    ],
+)
+def test_speech_endpoint_errors_never_echo_the_value(raw: str) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        _foundry(speech_endpoint=raw)
+
+    message = str(exc_info.value)
+    assert "secret-speech" not in message
+    assert "s3cret" not in message
+    assert "secret-path" not in message
+
+
+def test_speech_endpoint_is_excluded_from_repr() -> None:
+    settings = _foundry(speech_endpoint=SPEECH_ENDPOINT)
+
+    assert "jarvis-speech-test" not in repr(settings)
+    assert "jarvis-speech-test" not in str(settings)
+
+
+@pytest.mark.parametrize("language", ["ca-ES", "en-US", "es-ES", "fil-PH", "zh-Hans-CN"])
+def test_valid_recognition_languages_are_accepted(language: str) -> None:
+    assert _foundry(speech_recognition_language=language).speech_recognition_language == language
+
+
+@pytest.mark.parametrize(
+    "language", ["", " ", "ca", "CA-ES", "ca-es", "ca_ES", "catalan", "ca-ES-x", "ca-ES;", "e-US"]
+)
+def test_invalid_recognition_languages_are_rejected(language: str) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        _foundry(speech_recognition_language=language)
+
+    assert "JARVIS_SPEECH_RECOGNITION_LANGUAGE" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "voice",
+    [
+        "ca-ES-EnricNeural",
+        "ca-ES-JoanaNeural",
+        "en-US-AvaMultilingualNeural",
+        "en-US-Ava:DragonHDLatestNeural",
+        "zh-Hans-CN-XiaoxiaoNeural",
+    ],
+)
+def test_valid_voices_are_accepted(voice: str) -> None:
+    assert _foundry(speech_voice=voice).speech_voice == voice
+
+
+@pytest.mark.parametrize(
+    "voice",
+    [
+        "",
+        "EnricNeural",
+        "ca-ES",
+        "ca-ES-",
+        "ca-ES-Enric Neural",
+        'ca-ES-Enric"Neural',
+        "ca-ES-Enric'/><voice name='x",
+        "ca-ES-Enric<Neural>",
+        "ca-ES-Enric&Neural",
+        "ca-ES-" + "a" * 65,
+    ],
+)
+def test_invalid_voices_are_rejected(voice: str) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        _foundry(speech_voice=voice)
+
+    assert "JARVIS_SPEECH_VOICE" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "valid"),
+    [
+        ("speech_stt_timeout_seconds", 0, False),
+        ("speech_stt_timeout_seconds", 1, True),
+        ("speech_stt_timeout_seconds", 120, True),
+        ("speech_stt_timeout_seconds", 121, False),
+        ("speech_tts_timeout_seconds", 0, False),
+        ("speech_tts_timeout_seconds", 1, True),
+        ("speech_tts_timeout_seconds", 120, True),
+        ("speech_tts_timeout_seconds", 121, False),
+    ],
+)
+def test_speech_timeout_bounds(field: str, value: int, valid: bool) -> None:
+    if valid:
+        assert getattr(_foundry(**{field: value}), field) == value
+    else:
+        with pytest.raises(ValidationError):
+            _foundry(**{field: value})
+
+
+def test_there_are_no_speech_key_region_or_identity_settings() -> None:
+    names = {name for name in Settings.model_fields if name.startswith("speech_")}
+
+    assert names == {
+        "speech_endpoint",
+        "speech_recognition_language",
+        "speech_voice",
+        "speech_stt_timeout_seconds",
+        "speech_tts_timeout_seconds",
+    }
+    for forbidden in ("key", "secret", "region", "tenant", "subscription", "client"):
+        assert not [name for name in Settings.model_fields if forbidden in name], forbidden
 
 
 # Runs in a fresh interpreter. Every way to reach Azure is replaced with a recorder
@@ -358,6 +572,7 @@ from app.dependencies import get_foundry_client
 from app.main import app
 
 assert get_settings().foundry_configured is (sys.argv[1] == "configured")
+assert get_settings().speech_configured is (sys.argv[2] == "configured")
 Base.metadata.create_all(get_engine())
 
 with TestClient(app) as client:
@@ -370,20 +585,34 @@ with TestClient(app) as client:
     assert client.post("/api/auth/logout", headers=headers).status_code == 204
 
 assert used == [], used
+# The native Speech SDK is never loaded at startup or by other endpoints.
+assert not [m for m in sys.modules if m.startswith("azure.cognitiveservices")]
 assert get_foundry_client.cache_info().currsize == 0
 """
 
 
+@pytest.mark.parametrize("speech", ["configured", "not-configured"])
 @pytest.mark.parametrize("foundry", ["configured", "not-configured"])
-def test_startup_and_other_endpoints_never_touch_azure(tmp_path: Path, foundry: str) -> None:
-    # SDK modules may be imported; what must not happen is creating an Azure
-    # credential, requesting a token or calling Foundry over the network.
-    env = {key: value for key, value in os.environ.items() if not key.startswith("JARVIS_FOUNDRY_")}
+def test_startup_and_other_endpoints_never_touch_azure(
+    tmp_path: Path, foundry: str, speech: str
+) -> None:
+    # SDK modules may be imported (except the native Speech SDK); what must not
+    # happen is creating an Azure credential, requesting a token or any network call.
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("JARVIS_FOUNDRY_", "JARVIS_SPEECH_"))
+    }
     env["DATABASE_URL"] = f"sqlite:///{tmp_path / 'startup.db'}"
     if foundry == "configured":
         env["JARVIS_FOUNDRY_PROJECT_ENDPOINT"] = ENDPOINT
         env["JARVIS_FOUNDRY_MODEL"] = "startup-test-deployment"
+    if speech == "configured":
+        env["JARVIS_SPEECH_ENDPOINT"] = SPEECH_ENDPOINT
 
     subprocess.run(
-        [sys.executable, "-c", _STARTUP_SCRIPT, foundry], cwd=BACKEND_DIR, env=env, check=True
+        [sys.executable, "-c", _STARTUP_SCRIPT, foundry, speech],
+        cwd=BACKEND_DIR,
+        env=env,
+        check=True,
     )
