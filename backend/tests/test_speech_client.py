@@ -34,7 +34,7 @@ from app.integrations.speech.errors import (
 
 ENDPOINT = "https://secret-speech-host.cognitiveservices.azure.com"
 LANGUAGE = "ca-ES"
-VOICE = "ca-ES-EnricNeural"
+VOICE = "ca-ES-AlbaNeural"
 SESSION_ID = "0123456789abcdef0123456789abcdef"
 SECRET_TRANSCRIPT = "my private dictated note"
 
@@ -516,7 +516,7 @@ def test_from_settings_uses_the_speech_settings() -> None:
     assert client._endpoint == "https://jarvis-speech-test.cognitiveservices.azure.com"
     assert client._recognition_language == "es-ES"
     assert client._stt_timeout_seconds == 12
-    assert client._voice == "ca-ES-EnricNeural"
+    assert client._voice == "ca-ES-AlbaNeural"
     assert client._tts_timeout_seconds == 20
     assert client._credential is None
 

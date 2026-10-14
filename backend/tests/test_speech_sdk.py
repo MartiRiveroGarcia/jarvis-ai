@@ -303,7 +303,7 @@ def test_guarded_callbacks_never_raise_into_the_sdk() -> None:
 def open_synthesis(credential: TokenCredential | None = None) -> tuple[Any, RecordingCredential]:
     credential = credential or RecordingCredential()
     session = _sdk.open_synthesis(
-        endpoint=ENDPOINT, credential=credential, voice="ca-ES-EnricNeural", text="Hola"
+        endpoint=ENDPOINT, credential=credential, voice="ca-ES-AlbaNeural", text="Hola"
     )
     return session, credential
 
@@ -326,7 +326,7 @@ def test_synthesis_voice_and_mp3_output_format(spies: dict[str, Any]) -> None:
     session, _ = open_synthesis()
 
     [(_, config)] = spies["configs"]
-    assert config.speech_synthesis_voice_name == "ca-ES-EnricNeural"
+    assert config.speech_synthesis_voice_name == "ca-ES-AlbaNeural"
     assert spies["output_formats"] == [
         speechsdk.SpeechSynthesisOutputFormat.Audio24Khz48KBitRateMonoMp3
     ]

@@ -27,7 +27,7 @@ _SPEECH_CUSTOM_DOMAIN_HOST = re.compile(
 )
 # Speech locales such as ca-ES, en-US or zh-Hans-CN.
 _SPEECH_LOCALE = re.compile(r"[a-z]{2,3}(?:-[A-Z][a-z]{3})?-[A-Z]{2}")
-# Voice names such as ca-ES-EnricNeural or en-US-Ava:DragonHDLatestNeural. The
+# Voice names such as ca-ES-AlbaNeural or en-US-Ava:DragonHDLatestNeural. The
 # restricted alphabet also keeps the name safe to place in an SSML attribute.
 _SPEECH_VOICE = re.compile(r"[a-z]{2,3}(?:-[A-Z][a-z]{3})?-[A-Z]{2}-[A-Za-z0-9:]{1,64}")
 
@@ -78,7 +78,7 @@ class Settings(BaseSettings):
     # Not a credential, but kept out of repr so it does not end up in logs.
     speech_endpoint: str | None = Field(default=None, repr=False)
     speech_recognition_language: str = "ca-ES"
-    speech_voice: str = "ca-ES-EnricNeural"
+    speech_voice: str = "ca-ES-AlbaNeural"
     speech_stt_timeout_seconds: int = Field(default=45, ge=1, le=120)
     speech_tts_timeout_seconds: int = Field(default=20, ge=1, le=120)
 
@@ -174,7 +174,7 @@ class Settings(BaseSettings):
     def validate_speech_voice(cls, value: str) -> str:
         voice = value.strip()
         if not _SPEECH_VOICE.fullmatch(voice):
-            raise ValueError("JARVIS_SPEECH_VOICE must be a voice name such as ca-ES-EnricNeural")
+            raise ValueError("JARVIS_SPEECH_VOICE must be a voice name such as ca-ES-AlbaNeural")
         return voice
 
     @model_validator(mode="after")

@@ -311,7 +311,7 @@ def test_speech_is_optional_and_off_by_default() -> None:
     assert settings.speech_endpoint is None
     assert settings.speech_configured is False
     assert settings.speech_recognition_language == "ca-ES"
-    assert settings.speech_voice == "ca-ES-EnricNeural"
+    assert settings.speech_voice == "ca-ES-AlbaNeural"
     assert settings.speech_stt_timeout_seconds == 45
     assert settings.speech_tts_timeout_seconds == 20
 
@@ -444,6 +444,7 @@ def test_invalid_recognition_languages_are_rejected(language: str) -> None:
     "voice",
     [
         "ca-ES-EnricNeural",
+        "ca-ES-AlbaNeural",
         "ca-ES-JoanaNeural",
         "en-US-AvaMultilingualNeural",
         "en-US-Ava:DragonHDLatestNeural",
