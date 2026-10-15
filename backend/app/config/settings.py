@@ -27,6 +27,8 @@ _SPEECH_CUSTOM_DOMAIN_HOST = re.compile(
 )
 # Speech locales such as ca-ES, en-US or zh-Hans-CN.
 _SPEECH_LOCALE = re.compile(r"[a-z]{2,3}(?:-[A-Z][a-z]{3})?-[A-Z]{2}")
+# At-start language identification accepts at most four candidate languages.
+MAX_SPEECH_RECOGNITION_LANGUAGES = 4
 # Voice names such as ca-ES-AlbaNeural or en-US-Ava:DragonHDLatestNeural. The
 # restricted alphabet also keeps the name safe to place in an SSML attribute.
 _SPEECH_VOICE = re.compile(r"[a-z]{2,3}(?:-[A-Z][a-z]{3})?-[A-Z]{2}-[A-Za-z0-9:]{1,64}")
@@ -77,7 +79,13 @@ class Settings(BaseSettings):
     # custom domain; there is deliberately no key or region setting.
     # Not a credential, but kept out of repr so it does not end up in logs.
     speech_endpoint: str | None = Field(default=None, repr=False)
-    speech_recognition_language: str = "ca-ES"
+    # Spoken languages to recognise, in order. One locale: fixed-language recognition.
+    # Two to four: the service identifies which one is spoken at the start of each
+    # recording. Set as JSON, e.g. JARVIS_SPEECH_RECOGNITION_LANGUAGES='["ca-ES"]'.
+    speech_recognition_languages: tuple[str, ...] = ("ca-ES", "es-ES", "en-US", "zh-CN")
+    # Removed: replaced by speech_recognition_languages. Declared only so that a
+    # leftover value stops startup instead of being silently ignored.
+    speech_recognition_language: str | None = Field(default=None, exclude=True, repr=False)
     speech_voice: str = "ca-ES-AlbaNeural"
     speech_stt_timeout_seconds: int = Field(default=45, ge=1, le=120)
     speech_tts_timeout_seconds: int = Field(default=20, ge=1, le=120)
@@ -159,15 +167,30 @@ class Settings(BaseSettings):
             )
         return f"https://{host}"
 
+    @field_validator("speech_recognition_languages")
+    @classmethod
+    def validate_speech_recognition_languages(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        """1-4 distinct locales, at most one per language; never echo the values."""
+        name = "JARVIS_SPEECH_RECOGNITION_LANGUAGES"
+        locales = tuple(locale.strip() for locale in value)
+        if not 1 <= len(locales) <= MAX_SPEECH_RECOGNITION_LANGUAGES:
+            raise ValueError(f"{name} must list 1 to {MAX_SPEECH_RECOGNITION_LANGUAGES} locales")
+        if not all(_SPEECH_LOCALE.fullmatch(locale) for locale in locales):
+            raise ValueError(f"{name} must contain locales such as ca-ES or en-US")
+        # Language identification must not choose between variants of one language.
+        bases = [locale.split("-", 1)[0] for locale in locales]
+        if len(set(bases)) != len(bases):
+            raise ValueError(f"{name} must not list the same language twice")
+        return locales
+
     @field_validator("speech_recognition_language")
     @classmethod
-    def validate_speech_recognition_language(cls, value: str) -> str:
-        locale = value.strip()
-        if not _SPEECH_LOCALE.fullmatch(locale):
+    def reject_removed_speech_recognition_language(cls, value: str | None) -> None:
+        if value is not None:
             raise ValueError(
-                "JARVIS_SPEECH_RECOGNITION_LANGUAGE must be a locale such as ca-ES or en-US"
+                "JARVIS_SPEECH_RECOGNITION_LANGUAGE was replaced by "
+                "JARVIS_SPEECH_RECOGNITION_LANGUAGES (a JSON list of locales)"
             )
-        return locale
 
     @field_validator("speech_voice")
     @classmethod

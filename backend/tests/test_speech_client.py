@@ -5,6 +5,7 @@ callbacks.
 """
 
 import io
+import logging
 import os
 import subprocess
 import sys
@@ -33,7 +34,7 @@ from app.integrations.speech.errors import (
 )
 
 ENDPOINT = "https://secret-speech-host.cognitiveservices.azure.com"
-LANGUAGE = "ca-ES"
+LANGUAGES = ("ca-ES", "es-ES", "en-US", "zh-CN")
 VOICE = "ca-ES-AlbaNeural"
 SESSION_ID = "0123456789abcdef0123456789abcdef"
 SECRET_TRANSCRIPT = "my private dictated note"
@@ -184,7 +185,7 @@ def make_client(
     credentials = credentials or FakeCredentialFactory()
     client = AzureSpeechClient(
         endpoint=ENDPOINT + "/",
-        recognition_language=LANGUAGE,
+        recognition_languages=LANGUAGES,
         stt_timeout_seconds=timeout,
         voice=VOICE,
         tts_timeout_seconds=tts_timeout,
@@ -267,7 +268,7 @@ def test_the_adapter_receives_pcm_language_endpoint_and_credential() -> None:
 
     [opened] = sdk.opened
     assert opened["pcm"] == b"\xab\xcd" * 16_000  # PCM only, no RIFF header
-    assert opened["language"] == LANGUAGE
+    assert opened["languages"] == LANGUAGES
     assert opened["endpoint"] == ENDPOINT
     assert opened["credential"] is credentials.credential
 
@@ -507,18 +508,43 @@ def test_from_settings_uses_the_speech_settings() -> None:
     settings = Settings(
         _env_file=None,
         speech_endpoint="https://jarvis-speech-test.cognitiveservices.azure.com",
-        speech_recognition_language="es-ES",
+        speech_recognition_languages=("es-ES",),
         speech_stt_timeout_seconds=12,
     )
 
     client = AzureSpeechClient.from_settings(settings)
 
     assert client._endpoint == "https://jarvis-speech-test.cognitiveservices.azure.com"
-    assert client._recognition_language == "es-ES"
+    assert client._recognition_languages == ("es-ES",)
     assert client._stt_timeout_seconds == 12
     assert client._voice == "ca-ES-AlbaNeural"
     assert client._tts_timeout_seconds == 20
     assert client._credential is None
+
+
+def test_from_settings_defaults_to_the_four_candidate_languages() -> None:
+    settings = Settings(
+        _env_file=None, speech_endpoint="https://jarvis-speech-test.cognitiveservices.azure.com"
+    )
+
+    client = AzureSpeechClient.from_settings(settings)
+
+    assert client._recognition_languages == ("ca-ES", "es-ES", "en-US", "zh-CN")
+
+
+def test_the_client_neither_logs_the_languages_nor_the_transcript(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    client, _, _ = make_client(FakeSdk([phrase("private transcript"), END_OF_STREAM, STOPPED]))
+    client.transcribe(make_wav())
+    with pytest.raises(SpeechNoSpeechError):
+        make_client(FakeSdk([END_OF_STREAM, STOPPED]))[0].transcribe(make_wav())
+
+    logged = caplog.text + "".join(str(record.args) for record in caplog.records)
+    assert "private transcript" not in logged
+    for language in LANGUAGES:
+        assert language not in logged
 
 
 def test_the_credential_is_created_on_first_use_and_reused() -> None:
@@ -550,7 +576,7 @@ def test_a_native_sdk_that_cannot_load_is_an_sdk_error(monkeypatch: pytest.Monke
     monkeypatch.setitem(sys.modules, "app.integrations.speech._sdk", None)  # import fails
     client = AzureSpeechClient(
         endpoint=ENDPOINT,
-        recognition_language=LANGUAGE,
+        recognition_languages=LANGUAGES,
         stt_timeout_seconds=5,
         voice=VOICE,
         tts_timeout_seconds=5,

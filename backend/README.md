@@ -316,13 +316,13 @@ endpoint also needs Foundry.
 
 Invalid values are rejected at startup with a message that never repeats the value.
 
-| Variable                             | Default            | Description                                                         |
-| ------------------------------------ | ------------------ | ------------------------------------------------------------------- |
-| `JARVIS_SPEECH_ENDPOINT`             | unset              | Custom-domain endpoint, `https://<name>.cognitiveservices.azure.com` |
-| `JARVIS_SPEECH_RECOGNITION_LANGUAGE` | `ca-ES`            | Speech-to-text locale                                               |
-| `JARVIS_SPEECH_VOICE`                | `ca-ES-AlbaNeural` | Text-to-speech voice                                                |
-| `JARVIS_SPEECH_STT_TIMEOUT_SECONDS`  | `45`               | Speech-to-text limit per request in seconds (1–120)                 |
-| `JARVIS_SPEECH_TTS_TIMEOUT_SECONDS`  | `20`               | Text-to-speech limit per request in seconds (1–120)                 |
+| Variable                              | Default                             | Description                                                          |
+| ------------------------------------- | ----------------------------------- | -------------------------------------------------------------------- |
+| `JARVIS_SPEECH_ENDPOINT`              | unset                               | Custom-domain endpoint, `https://<name>.cognitiveservices.azure.com` |
+| `JARVIS_SPEECH_RECOGNITION_LANGUAGES` | `["ca-ES","es-ES","en-US","zh-CN"]` | Spoken languages: JSON list of 1–4 locales, one per language         |
+| `JARVIS_SPEECH_VOICE`                 | `ca-ES-AlbaNeural`                  | Text-to-speech voice                                                 |
+| `JARVIS_SPEECH_STT_TIMEOUT_SECONDS`   | `45`                                | Speech-to-text limit per request in seconds (1–120)                  |
+| `JARVIS_SPEECH_TTS_TIMEOUT_SECONDS`   | `20`                                | Text-to-speech limit per request in seconds (1–120)                  |
 
 ```bash
 # backend/.env (placeholder; use your own value)
@@ -338,6 +338,8 @@ JARVIS_SPEECH_ENDPOINT=https://<custom-domain>.cognitiveservices.azure.com
   reply is returned as MP3 (24 kHz, 48 kbit/s, mono) without being played or written
   to disk on the server.
 - **Bounded:** each speech-to-text and text-to-speech call is limited by its timeout.
+- **Language identification:** with more than one recognition language, the service
+  identifies the spoken one at the start of each recording, in the same request.
 
 ## Voice API
 
