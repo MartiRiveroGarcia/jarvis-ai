@@ -33,9 +33,7 @@ Mobile (Flutter, Android-first):
 - [x] Assistant home with a **visual-only** voice button
 - [x] Account settings and sign out
 
-**Sprint 02 — Basic AI assistant (in progress).**
-
-Done:
+**Sprint 02 — Basic AI assistant (complete).**
 
 - [x] Microsoft Foundry integration: Responses API client authenticated with
       Microsoft Entra ID (no API keys), optional and created lazily
@@ -59,7 +57,7 @@ Done:
       Catalan, verified on a physical Android device in all four languages
 
 Not implemented yet: AI agents, tools, RAG and Android assistant integration — see the
-roadmap.
+roadmap. Next: Sprint 03, Android assistant integration.
 
 ## Architecture
 
@@ -155,13 +153,14 @@ The Flutter app is deliberately minimal and voice-first:
   the assistant and shows the reply. It is kept to test the text path on its own,
   separately from speech.
 
-Future Android integration (planned, not implemented):
+Future Android integration (planned for Sprint 03, not implemented):
 
-- Registering Jarvis for Android's assistant role through `VoiceInteractionService`,
-  so it can be invoked like the system assistant — for example by long-pressing the
-  power button.
-- These Android-specific integrations may require a small native Kotlin layer
-  alongside the Flutter code.
+- Making Jarvis selectable as Android's default digital assistant, so it can be
+  invoked like the system assistant — for example by long-pressing the power button.
+- The exact official Android integration mechanism will be validated on a physical
+  Pixel before the production architecture is chosen; the first spike evaluates an
+  `ACTION_ASSIST` activity.
+- This may require a small native Kotlin layer alongside the Flutter code.
 
 ## Tech stack
 
@@ -182,19 +181,30 @@ Future Android integration (planned, not implemented):
 
 ## Roadmap
 
-| Sprint | Focus                                                        | Status      |
-| ------ | ------------------------------------------------------------ | ----------- |
-| 01     | Foundation, authentication API and Flutter client            | Complete    |
-| 02     | Basic AI assistant: Microsoft Foundry text, then speech      | In progress |
-| 03     | Agent core and tool calling                                  | Planned     |
-| 04     | Trello integration                                           | Planned     |
-| 05     | Excel / Microsoft Graph integration                          | Planned     |
-| 06     | Multi-agent orchestration                                    | Planned     |
-| 07     | Voice interaction                                            | Planned     |
-| 08     | Android assistant integration (assistant role, power button) | Planned     |
+| Sprint | Focus                                                                                                   | Status   |
+| ------ | ------------------------------------------------------------------------------------------------------- | -------- |
+| 01     | Foundation, authentication API and Flutter client                                                       | Complete |
+| 02     | Basic AI assistant: Foundry text, Azure AI Speech, push-to-talk, multilingual input and Catalan replies | Complete |
+| 03     | Android assistant integration: default digital assistant, long-press Power → Jarvis                     | Next     |
+| 04     | Agent core and tool calling                                                                             | Planned  |
+| 05     | Memory: persistent conversations and context                                                            | Planned  |
+| 06     | Trello integration                                                                                      | Planned  |
+| 07     | Excel / Microsoft Graph integration                                                                     | Planned  |
+| 08     | Retrieval (RAG), using Azure AI Search where appropriate                                                | Planned  |
+| 09     | Multi-agent orchestration                                                                               | Planned  |
 
-Later: Docker, Azure deployment, CI/CD, observability, evaluations and security
-hardening (including rate limiting). The roadmap is provisional.
+- **Sprint 03** starts with a physical Pixel spike: does Jarvis appear as a digital
+  assistant app, can it be selected, does long-press Power invoke it (from a cold and a
+  running app), and how does it behave on a locked phone. The production invocation
+  architecture, and how a hands-free conversation ends, are designed after that spike.
+- **Sprint 04** evaluates Microsoft Foundry Agents, including whether Jarvis's
+  persistent instructions should move from `AssistantService` into a versioned Foundry
+  Agent definition, and the tool architecture and orchestration.
+
+Later, not yet scheduled: streaming or realtime voice, voice-friendly model output
+(fewer Markdown lists), foreign-language speech quality, Docker, Azure deployment,
+CI/CD, observability, evaluations, further security hardening (including rate
+limiting) and a broader Azure architecture review. The roadmap is provisional.
 
 ## Development workflow
 
