@@ -1,8 +1,9 @@
 # Jarvis backend
 
 FastAPI service that hosts Jarvis's API, AI logic and integrations.
-It currently exposes a health check, the authentication API and a text assistant
-endpoint backed by Microsoft Foundry (optional).
+It currently exposes a health check, the authentication API, a text assistant
+endpoint backed by Microsoft Foundry and a voice endpoint that adds Azure AI Speech
+(both optional).
 
 ## Requirements
 
@@ -65,7 +66,9 @@ Settings are read from environment variables prefixed with `JARVIS_`, or from
 | `DATABASE_URL`                | `sqlite:///<backend>/jarvis.db` | SQLAlchemy database URL (no `JARVIS_` prefix)                           |
 
 The optional Microsoft Foundry settings (`JARVIS_FOUNDRY_*`) are described in
-[Microsoft Foundry (optional)](#microsoft-foundry-optional).
+[Microsoft Foundry (optional)](#microsoft-foundry-optional), and the optional Azure AI
+Speech settings (`JARVIS_SPEECH_*`) in
+[Azure AI Speech (optional)](#azure-ai-speech-optional).
 
 `.env` is ignored by Git. Never commit `.env` files, credentials, tokens, keys or
 environment-specific endpoint values; add new variables to `.env.example` with a
@@ -240,7 +243,7 @@ Each failed assistant request is logged once by the `jarvis.assistant` logger wi
 metadata only, for example:
 
 ```text
-assistant request failed: error=FoundryUnavailableError reason=forbidden status_code=403 request_id=<id> input_length=27
+assistant request failed: error=FoundryUnavailableError reason=forbidden status_code=403 request_id=<id>
 ```
 
 | `reason`                       | HTTP      | Likely cause and fix                                                                |
@@ -290,6 +293,94 @@ curl -X POST localhost:8000/api/assistant/respond \
 Error responses never include Foundry error details, the endpoint or the deployment
 name.
 
+## Azure AI Speech (optional)
+
+The voice endpoint uses [Azure AI Speech](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/)
+through the Speech SDK (`azure-cognitiveservices-speech`) for speech-to-text and
+text-to-speech, and Microsoft Foundry for the reply in between.
+
+Speech is **optional**. Without it, the backend starts and works normally; only
+`POST /api/voice/respond` returns `503 The assistant is not available`. The voice
+endpoint also needs Foundry.
+
+### Prerequisites and authentication
+
+- A Speech resource with a **custom domain**, which Microsoft Entra ID authentication
+  requires.
+- Your identity (or the deployed managed identity) needs the **Cognitive Services
+  Speech User** role on the resource.
+- Authentication uses the same `DefaultAzureCredential` as Foundry (`az login`
+  locally). There is deliberately **no key or region setting**.
+
+### Settings
+
+Invalid values are rejected at startup with a message that never repeats the value.
+
+| Variable                             | Default            | Description                                                         |
+| ------------------------------------ | ------------------ | ------------------------------------------------------------------- |
+| `JARVIS_SPEECH_ENDPOINT`             | unset              | Custom-domain endpoint, `https://<name>.cognitiveservices.azure.com` |
+| `JARVIS_SPEECH_RECOGNITION_LANGUAGE` | `ca-ES`            | Speech-to-text locale                                               |
+| `JARVIS_SPEECH_VOICE`                | `ca-ES-AlbaNeural` | Text-to-speech voice                                                |
+| `JARVIS_SPEECH_STT_TIMEOUT_SECONDS`  | `45`               | Speech-to-text limit per request in seconds (1–120)                 |
+| `JARVIS_SPEECH_TTS_TIMEOUT_SECONDS`  | `20`               | Text-to-speech limit per request in seconds (1–120)                 |
+
+```bash
+# backend/.env (placeholder; use your own value)
+JARVIS_SPEECH_ENDPOINT=https://<custom-domain>.cognitiveservices.azure.com
+```
+
+### Behaviour
+
+- **Lazy initialisation:** starting the app loads no Speech library, creates no
+  credential and makes no Speech call. The client is created on the first voice
+  request and reused.
+- **In memory only:** the recording is streamed to Speech from memory, and the spoken
+  reply is returned as MP3 (24 kHz, 48 kbit/s, mono) without being played or written
+  to disk on the server.
+- **Bounded:** each speech-to-text and text-to-speech call is limited by its timeout.
+
+## Voice API
+
+| Endpoint                  | Auth   | Request body           | Success                     | Errors                                          |
+| ------------------------- | ------ | ---------------------- | --------------------------- | ----------------------------------------------- |
+| `POST /api/voice/respond` | Bearer | `audio/wav`, ≤ 1 MiB   | `200` `audio/mpeg` (MP3)    | `401`, `413`, `415`, `422`, `429`, `503`, `504` |
+
+```bash
+curl -X POST localhost:8000/api/voice/respond \
+  -H "Authorization: Bearer <session_token>" -H "Content-Type: audio/wav" \
+  --data-binary @question.wav -o reply.mp3
+```
+
+- The body is one WAV recording: 16 kHz, 16-bit, mono PCM (at most 1 MiB, about 30 s).
+- The session is checked before the body is read.
+- The recording is transcribed, sent to the assistant with the same instruction as
+  the text endpoint, and the reply is synthesised as speech. Nothing is stored.
+- All `/api/voice/*` responses, including errors, carry `Cache-Control: no-store`.
+
+| Status | `detail`                                          | When                                                      |
+| ------ | ------------------------------------------------- | --------------------------------------------------------- |
+| `401`  | `Invalid or expired session`                      | Missing or invalid session                                |
+| `413`  | `The recording is too large`                      | Body over 1 MiB                                           |
+| `415`  | `The recording must be a WAV file`                | `Content-Type` is not `audio/wav`                         |
+| `422`  | `The recording could not be processed`            | Not a usable 16 kHz mono 16-bit WAV                       |
+| `422`  | `Jarvis didn't hear anything`                     | No speech recognised                                      |
+| `422`  | `The assistant couldn't answer that request`      | Declined by content filtering or the model                |
+| `429`  | `The assistant is busy. Please try again shortly` | Speech or Foundry rate limited                            |
+| `503`  | `The assistant is not available`                  | Speech or Foundry is not configured                       |
+| `503`  | `The assistant is temporarily unavailable`        | Speech or Foundry failed or returned an unusable response |
+| `504`  | `The assistant took too long to respond`          | Timeout                                                   |
+
+Each failed voice request is logged once by the `jarvis.voice` logger with metadata
+only, for example:
+
+```text
+voice request failed: stage=stt error=SpeechNoSpeechError reason=no_speech code=None
+```
+
+`stage` is `stt`, `assistant` or `tts`; assistant failures are also logged by
+`jarvis.assistant` as described above. Logs never contain audio, audio sizes,
+transcripts, replies or Speech error details.
+
 ## Security notes
 
 - Passwords are hashed with **Argon2id** (`argon2-cffi`), using parameters pinned to
@@ -319,11 +410,15 @@ name.
   managed identity when deployed); there are no API keys. The mobile app never holds
   Foundry or Azure credentials and never calls Azure directly.
 - Assistant messages and replies are never stored or logged; failures are logged with
-  metadata only (error type, reason, status code, Foundry request id, input length).
+  metadata only (error type, reason, status code, Foundry request id).
+- **Azure AI Speech:** access uses Microsoft Entra ID only, with no keys. Voice
+  recordings, transcripts and spoken replies are never stored or logged, and audio is
+  never written to disk; failures are logged with metadata only (stage, error type,
+  reason, SDK error code).
 - Never commit `.env` files, credentials, tokens, keys or environment-specific
   endpoint values. Documentation uses placeholders only.
-- Automated tests isolate themselves from local Foundry configuration and do not make
-  real Foundry calls.
+- Automated tests isolate themselves from local Foundry and Speech configuration and
+  do not make real Foundry or Speech calls.
 
 ## Structure
 
@@ -335,12 +430,13 @@ app/
 ├── controllers/      # FastAPI routers and HTTP error handlers (HTTP layer)
 ├── database/         # SQLAlchemy base, engine, session factory, get_db, UTC datetime type
 ├── integrations/
-│   └── foundry/      # Foundry Responses API client and its errors (Entra ID, lazy)
+│   ├── foundry/      # Foundry Responses API client and its errors (Entra ID, lazy)
+│   └── speech/       # Azure AI Speech client, SDK adapter, WAV checks (Entra ID, lazy)
 ├── models/           # SQLAlchemy ORM models (database tables)
 ├── repositories/     # persistence queries; flush only, never commit
 ├── schemas/          # Pydantic schemas (API contracts)
 ├── security/         # password hashing, password policy, session token utilities
-└── services/         # use cases (AuthService, AssistantService); own commit/rollback
+└── services/         # use cases (auth, assistant, voice assistant); own commit/rollback
 alembic/              # database migrations (env.py reads DATABASE_URL via Settings)
 tests/                # pytest suite
 ```

@@ -3,23 +3,22 @@
 Native Flutter client for Jarvis, a voice-first personal AI assistant. Android-first;
 the Dart code is kept portable so iOS can be added later (there is no iOS project yet).
 
-## What works (Sprint 01)
+## What works
 
 - Register and log in (email plus a 15–128 character password; spaces allowed).
 - Session restore at startup through `GET /api/auth/me`. If the server can't be
   reached, the app offers Retry instead of signing you out.
 - The session token is kept in secure storage backed by the Android Keystore.
 - Protected routing: signed-out users only see login and registration.
-- Assistant home with a **visual-only** voice button.
+- Push-to-talk with Jarvis: hold the voice button, speak, release and hear the reply —
+  see [Push-to-talk](#push-to-talk).
 - Settings: email, member-since date, app version and sign out.
 
-**Sprint 02 (in progress):** a temporary, debug-only screen sends text to the Jarvis
-assistant and shows its reply — see
-[Developer text assistant](#developer-text-assistant-debug-only).
+A temporary, debug-only screen also sends text to the Jarvis assistant and shows its
+reply — see [Developer text assistant](#developer-text-assistant-debug-only).
 
-**Not implemented yet:** real voice (no microphone access, recording, speech-to-text
-or text-to-speech), AI agents and Android assistant integration. The voice button
-only shows "Voice interaction is coming soon."
+**Not implemented yet:** speech input in languages other than Catalan, AI agents and
+Android assistant integration.
 
 ## Prerequisites
 
@@ -65,6 +64,54 @@ If the phone can't connect, check that your firewall allows port 8000.
   `https://`, enforced both by the app and by Android's network security config.
 - It is configuration, not a secret: values passed with `--dart-define` are compiled
   into the app and can be extracted from it.
+
+## Push-to-talk
+
+The home screen is built around one voice button.
+
+- **Hold** the button and speak: the status shows **Listening…** once the microphone is
+  actually recording.
+- **Release** to send: **Jarvis is thinking…**, then **Jarvis is speaking…** while the
+  reply plays, then back to **Hold to talk**.
+- **Pressing while Jarvis is speaking** stops the reply and starts a new recording.
+- **Microphone permission** is requested on first use. If you release during the
+  prompt, nothing is recorded. If access is refused, the app says so and records
+  nothing.
+- **Limits:** a recording shorter than 0.3 s is not sent ("Hold the button a little
+  longer."); at 30 s it stops and is sent automatically.
+- **Accessibility:** with TalkBack or a keyboard, double-tap (or Enter / Space) to start
+  and again to send, or to interrupt a reply. The button is unavailable while Jarvis
+  is thinking.
+- **Leaving the app** while Jarvis is listening, thinking or speaking (switching apps,
+  locking the phone, pulling down the notification shade) cancels the exchange: the
+  recording is discarded and a late reply is not played.
+- **Errors** are short fixed messages ("Jarvis didn't hear anything.", "Couldn't reach
+  Jarvis. Check your connection and try again.", …), never status codes or server
+  details. An expired session returns you to login.
+- Speech recognition is currently **Catalan**; replies are spoken with the
+  `ca-ES-AlbaNeural` voice.
+
+How it works:
+
+- The app records 16 kHz, 16-bit mono PCM **in memory**, wraps it as a WAV and sends it
+  with the Jarvis session to `POST /api/voice/respond`. The reply is MP3 audio. On
+  Android it is played from memory through audioplayers' byte source (verified on a
+  Pixel); other platform backends may buffer audio internally.
+- Jarvis does not create audio files of its own: recordings and replies are not saved,
+  and application logs never contain audio, transcripts or replies.
+- The voice request has its own **100-second** timeout, longer than the backend's
+  combined speech and model limits.
+- The recording, network and playback logic lives in a voice controller that does not
+  depend on the button, so other triggers can reuse it later.
+
+To try it on a physical phone, configure Microsoft Foundry and Azure AI Speech in the
+backend (see [../backend/README.md](../backend/README.md#azure-ai-speech-optional)),
+then follow the run steps in
+[Try it on a physical Android phone](#try-it-on-a-physical-android-phone) and hold the
+voice button on the home screen.
+
+Verified end to end on a physical Android device against the local FastAPI backend,
+Azure AI Speech and Microsoft Foundry.
 
 ## Developer text assistant (debug only)
 
@@ -144,6 +191,10 @@ and Microsoft Foundry deployment.
 - Assistant messages and replies are kept only in memory by the mobile developer
   screen and are not persisted by the app. Application logs do not record their
   content.
+- The only permission added for voice is `RECORD_AUDIO`, requested on first use.
+  Jarvis keeps recordings and spoken replies only for one exchange and never saves,
+  logs or intentionally writes them to files (Android playback is in memory). Voice
+  activity stops when the app leaves the foreground.
 - The app version shown in Settings comes from `pubspec.yaml` via the Flutter build
   (`FLUTTER_BUILD_NAME`); it is build metadata, not configuration.
 
