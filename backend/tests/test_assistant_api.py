@@ -537,6 +537,24 @@ def test_foundry_client_is_created_lazily_and_reused(
     assert get_foundry_client.cache_info().currsize == 1
 
 
+@pytest.mark.parametrize(
+    "message",
+    ["¿Cuántos días tiene una semana?", "How many days are in a week?", "一个星期有几天？"],
+)
+def test_real_wiring_sends_the_catalan_policy_as_instructions_and_the_message_as_input(
+    make_client: Callable[..., TestClient], fake_azure: FakeAzure, message: str
+) -> None:
+    api = make_client()
+
+    assert _ask(api, {"message": message}).status_code == 200
+
+    [request] = fake_azure.requests  # one upstream request, no translation call
+    body = json.loads(request.content)
+    assert body["instructions"] == JARVIS_INSTRUCTIONS
+    assert "Always reply in Catalan" in body["instructions"]
+    assert body["input"] == message
+
+
 def test_real_wiring_sends_one_stateless_request(
     make_client: Callable[..., TestClient], fake_azure: FakeAzure
 ) -> None:

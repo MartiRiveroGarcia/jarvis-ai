@@ -331,3 +331,15 @@ def test_service_module_uses_no_database_or_sdk() -> None:
         "app.integrations.speech._sdk",
     )
     assert not [name for name in imported if name.startswith(forbidden)]
+
+
+def test_the_language_policy_is_not_duplicated_in_the_voice_path() -> None:
+    # Voice reaches the model only through AssistantService and its shared instruction.
+    root = Path(__file__).resolve().parents[1] / "app"
+    for path in (
+        root / "services" / "voice_assistant_service.py",
+        root / "controllers" / "voice_controller.py",
+    ):
+        source = path.read_text()
+        assert "Catalan" not in source, path.name
+        assert "instructions" not in source, path.name

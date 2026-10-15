@@ -21,6 +21,7 @@ from app.integrations.speech import _sdk  # noqa: E402
 
 ENDPOINT = "https://jarvis-speech-test.cognitiveservices.azure.com"
 PCM = bytes(range(256)) * 250  # 64,000 bytes: two full chunks
+LANGUAGES = ("ca-ES", "es-ES", "en-US", "zh-CN")
 
 
 class RecordingCredential(TokenCredential):
@@ -66,6 +67,8 @@ def spies(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         "streams": [],
         "configs": [],
         "recognizers": [],
+        "recognizer_kwargs": [],
+        "auto_detect": [],
         "synthesizers": [],
         "output_formats": [],
     }
@@ -74,6 +77,7 @@ def spies(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     real_config = speechsdk.SpeechConfig
     real_recognizer = speechsdk.SpeechRecognizer
     real_synthesizer = speechsdk.SpeechSynthesizer
+    real_auto_detect = speechsdk.languageconfig.AutoDetectSourceLanguageConfig
 
     # Factories, not subclasses: the SDK's __del__ methods use super(type(self), self),
     # which recurses forever on subclasses.
@@ -118,29 +122,47 @@ def spies(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     def speech_recognizer(**kwargs: Any) -> Any:
         recognizer = real_recognizer(**kwargs)
         recorded["recognizers"].append(recognizer)
+        recorded["recognizer_kwargs"].append(kwargs)
         return recognizer
+
+    def auto_detect(**kwargs: Any) -> Any:
+        recorded["auto_detect"].append(kwargs)
+        return real_auto_detect(**kwargs)
 
     monkeypatch.setattr(speechsdk.audio, "AudioStreamFormat", audio_stream_format)
     monkeypatch.setattr(speechsdk.audio, "PushAudioInputStream", push_stream)
     monkeypatch.setattr(speechsdk, "SpeechConfig", speech_config)
     monkeypatch.setattr(speechsdk, "SpeechRecognizer", speech_recognizer)
     monkeypatch.setattr(speechsdk, "SpeechSynthesizer", speech_synthesizer)
+    monkeypatch.setattr(speechsdk.languageconfig, "AutoDetectSourceLanguageConfig", auto_detect)
     return recorded
 
 
-def open_session(credential: TokenCredential | None = None) -> tuple[Any, RecordingCredential]:
+def open_session(
+    credential: TokenCredential | None = None, languages: tuple[str, ...] = ("ca-ES",)
+) -> tuple[Any, RecordingCredential]:
     credential = credential or RecordingCredential()
     session = _sdk.open_recognition(
-        endpoint=ENDPOINT, credential=credential, language="ca-ES", pcm=PCM, sink=RecordingSink()
+        endpoint=ENDPOINT, credential=credential, languages=languages, pcm=PCM, sink=RecordingSink()
     )
     return session, credential
+
+
+def recognizer_property(recognizer: Any, name: str) -> str:
+    return recognizer.properties.get_property(getattr(speechsdk.PropertyId, name))
+
+
+BOTH_PATHS = pytest.mark.parametrize("languages", [("ca-ES",), LANGUAGES], ids=["one", "four"])
 
 
 # --- construction ------------------------------------------------------------------------
 
 
-def test_audio_format_is_explicit_16khz_16bit_mono(spies: dict[str, Any]) -> None:
-    session, _ = open_session()
+@BOTH_PATHS
+def test_audio_format_is_explicit_16khz_16bit_mono(
+    spies: dict[str, Any], languages: tuple[str, ...]
+) -> None:
+    session, _ = open_session(languages=languages)
 
     assert spies["formats"] == [
         {"samples_per_second": 16_000, "bits_per_sample": 16, "channels": 1}
@@ -148,10 +170,11 @@ def test_audio_format_is_explicit_16khz_16bit_mono(spies: dict[str, Any]) -> Non
     session.close()
 
 
+@BOTH_PATHS
 def test_only_the_pcm_is_written_in_chunks_then_the_stream_is_closed(
-    spies: dict[str, Any],
+    spies: dict[str, Any], languages: tuple[str, ...]
 ) -> None:
-    session, _ = open_session()
+    session, _ = open_session(languages=languages)
 
     [stream] = spies["streams"]
     assert b"".join(stream.writes) == PCM
@@ -179,16 +202,22 @@ def test_config_uses_the_credential_the_custom_endpoint_and_the_language(
     session.close()
 
 
-def test_construction_requests_no_token_and_opens_no_connection(spies: dict[str, Any]) -> None:
-    session, credential = open_session()
+@BOTH_PATHS
+def test_construction_requests_no_token_and_opens_no_connection(
+    spies: dict[str, Any], languages: tuple[str, ...]
+) -> None:
+    session, credential = open_session(languages=languages)
     time.sleep(0.3)  # give any background activity a chance to show up
 
     assert credential.requests == []
     session.close()
 
 
-def test_handlers_are_connected_and_close_disconnects_them(spies: dict[str, Any]) -> None:
-    session, _ = open_session()
+@BOTH_PATHS
+def test_handlers_are_connected_and_close_disconnects_them(
+    spies: dict[str, Any], languages: tuple[str, ...]
+) -> None:
+    session, _ = open_session(languages=languages)
     [recognizer] = spies["recognizers"]
     signals = [recognizer.recognized, recognizer.canceled, recognizer.session_stopped]
     assert all(signal.is_connected() for signal in signals)
@@ -198,6 +227,66 @@ def test_handlers_are_connected_and_close_disconnects_them(spies: dict[str, Any]
     assert not any(signal.is_connected() for signal in signals)
     assert session._recognizer is None
     assert session._stream is None
+
+
+def test_one_language_is_fixed_recognition_without_identification(
+    spies: dict[str, Any],
+) -> None:
+    session, _ = open_session(languages=("es-ES",))
+
+    [(_, config)] = spies["configs"]
+    [kwargs] = spies["recognizer_kwargs"]
+    [recognizer] = spies["recognizers"]
+    assert config.speech_recognition_language == "es-ES"
+    assert spies["auto_detect"] == []
+    assert "auto_detect_source_language_config" not in kwargs
+    assert (
+        recognizer_property(recognizer, "SpeechServiceConnection_AutoDetectSourceLanguages") == ""
+    )
+    assert recognizer_property(recognizer, "SpeechServiceConnection_LanguageIdMode") == ""
+    session.close()
+
+
+def test_several_languages_are_identified_at_start_among_exactly_the_candidates(
+    spies: dict[str, Any],
+) -> None:
+    session, _ = open_session(languages=LANGUAGES)
+
+    assert spies["auto_detect"] == [{"languages": ["ca-ES", "es-ES", "en-US", "zh-CN"]}]
+    [kwargs] = spies["recognizer_kwargs"]
+    assert set(kwargs) == {"speech_config", "audio_config", "auto_detect_source_language_config"}
+    # Read back from the real native recognizer.
+    [recognizer] = spies["recognizers"]
+    assert (
+        recognizer_property(recognizer, "SpeechServiceConnection_AutoDetectSourceLanguages")
+        == "ca-ES,es-ES,en-US,zh-CN"
+    )
+    assert recognizer_property(recognizer, "SpeechServiceConnection_LanguageIdMode") == "AtStart"
+    session.close()
+
+
+def test_several_languages_leave_no_fixed_recognition_language(spies: dict[str, Any]) -> None:
+    # The SDK silently accepts a fixed language next to identification.
+    session, _ = open_session(languages=LANGUAGES)
+
+    [(_, config)] = spies["configs"]
+    [recognizer] = spies["recognizers"]
+    assert config.speech_recognition_language == ""
+    assert recognizer_property(recognizer, "SpeechServiceConnection_RecoLanguage") == ""
+    session.close()
+
+
+def test_identification_keeps_the_entra_endpoint_and_no_key_or_region(
+    spies: dict[str, Any],
+) -> None:
+    credential = RecordingCredential()
+    session, _ = open_session(credential, languages=LANGUAGES)
+
+    [(kwargs, config)] = spies["configs"]
+    assert kwargs == {"token_credential": credential, "endpoint": ENDPOINT + "/"}
+    assert config.get_property(speechsdk.PropertyId.SpeechServiceConnection_Key) == ""
+    assert config.get_property(speechsdk.PropertyId.SpeechServiceConnection_Region) == ""
+    session.close()
 
 
 def test_close_is_idempotent_and_never_raises(spies: dict[str, Any]) -> None:

@@ -231,8 +231,9 @@ other deployments may need different model-specific parameters later.
 - **Lazy initialisation:** starting the app creates no Azure credential, requests no
   token and makes no Foundry call. The client, credential and SDK client are created
   on the first assistant request and reused for the life of the process.
-- **Stateless requests:** each call sends a fixed Jarvis instruction plus the user's
-  message with `store=false`. There is no history, conversation id or
+- **Stateless requests:** each call sends a fixed Jarvis instruction (which also sets
+  the reply language; see [Languages](#languages)) plus the user's message with
+  `store=false`. There is no history, conversation id or
   `previous_response_id`, and nothing is stored by Jarvis.
 - **No automatic retries** (`max_retries=0`): one Jarvis request makes at most one
   Foundry request.
@@ -296,8 +297,9 @@ name.
 ## Azure AI Speech (optional)
 
 The voice endpoint uses [Azure AI Speech](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/)
-through the Speech SDK (`azure-cognitiveservices-speech`) for speech-to-text and
-text-to-speech, and Microsoft Foundry for the reply in between.
+through the Speech SDK (`azure-cognitiveservices-speech`) for spoken-language
+identification, speech-to-text and text-to-speech, and Microsoft Foundry for the reply
+in between.
 
 Speech is **optional**. Without it, the backend starts and works normally; only
 `POST /api/voice/respond` returns `503 The assistant is not available`. The voice
@@ -316,18 +318,48 @@ endpoint also needs Foundry.
 
 Invalid values are rejected at startup with a message that never repeats the value.
 
-| Variable                             | Default            | Description                                                         |
-| ------------------------------------ | ------------------ | ------------------------------------------------------------------- |
-| `JARVIS_SPEECH_ENDPOINT`             | unset              | Custom-domain endpoint, `https://<name>.cognitiveservices.azure.com` |
-| `JARVIS_SPEECH_RECOGNITION_LANGUAGE` | `ca-ES`            | Speech-to-text locale                                               |
-| `JARVIS_SPEECH_VOICE`                | `ca-ES-AlbaNeural` | Text-to-speech voice                                                |
-| `JARVIS_SPEECH_STT_TIMEOUT_SECONDS`  | `45`               | Speech-to-text limit per request in seconds (1–120)                 |
-| `JARVIS_SPEECH_TTS_TIMEOUT_SECONDS`  | `20`               | Text-to-speech limit per request in seconds (1–120)                 |
+| Variable                              | Default                             | Description                                                          |
+| ------------------------------------- | ----------------------------------- | -------------------------------------------------------------------- |
+| `JARVIS_SPEECH_ENDPOINT`              | unset                               | Custom-domain endpoint, `https://<name>.cognitiveservices.azure.com` |
+| `JARVIS_SPEECH_RECOGNITION_LANGUAGES` | `["ca-ES","es-ES","en-US","zh-CN"]` | Spoken languages: JSON list of 1–4 locales, one per language         |
+| `JARVIS_SPEECH_VOICE`                 | `ca-ES-AlbaNeural`                  | Text-to-speech voice                                                 |
+| `JARVIS_SPEECH_STT_TIMEOUT_SECONDS`   | `45`                                | Speech-to-text limit per request in seconds (1–120)                  |
+| `JARVIS_SPEECH_TTS_TIMEOUT_SECONDS`   | `20`                                | Text-to-speech limit per request in seconds (1–120)                  |
 
 ```bash
 # backend/.env (placeholder; use your own value)
 JARVIS_SPEECH_ENDPOINT=https://<custom-domain>.cognitiveservices.azure.com
 ```
+
+### Languages
+
+- **Input:** by default the user may speak Catalan (`ca-ES`), Spanish (`es-ES`),
+  English (`en-US`) or Simplified Chinese (`zh-CN`).
+- `JARVIS_SPEECH_RECOGNITION_LANGUAGES` is a JSON list of 1–4 locales, with at most one
+  locale per language (for example, not both `en-US` and `en-GB`):
+  - **one locale:** fixed-language speech-to-text;
+  - **two to four locales:** Azure AI Speech
+    [language identification](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/language-identification)
+    picks the spoken language at the start of each recording, in the same recognition
+    request as the transcription.
+- The former single-locale `JARVIS_SPEECH_RECOGNITION_LANGUAGE` is no longer accepted:
+  if it is still set, the backend stops at startup and names the replacement.
+- **Replies:** Jarvis normally replies in Catalan whatever the input language, through
+  the shared assistant instruction used by both the text and voice endpoints (one model
+  call, no translation step). Content the user explicitly asks for in another language,
+  such as a translation, a quotation, an example or a whole text, is still given in that
+  language. This is model behaviour, not a hard guarantee.
+- **Voice:** replies are always spoken with `JARVIS_SPEECH_VOICE` (`ca-ES-AlbaNeural`
+  by default); the voice does not change with the input language.
+
+Limitations:
+
+- Language identification always chooses one of the configured languages, so speech
+  in another language may be misrecognised as one of them.
+- A recording that mixes languages is transcribed in the language identified at its
+  start.
+- Foreign-language content in a reply is spoken by the Catalan voice and may not sound
+  natural.
 
 ### Behaviour
 
@@ -338,6 +370,7 @@ JARVIS_SPEECH_ENDPOINT=https://<custom-domain>.cognitiveservices.azure.com
   reply is returned as MP3 (24 kHz, 48 kbit/s, mono) without being played or written
   to disk on the server.
 - **Bounded:** each speech-to-text and text-to-speech call is limited by its timeout.
+- **The detected language is not stored or logged.**
 
 ## Voice API
 
@@ -353,8 +386,10 @@ curl -X POST localhost:8000/api/voice/respond \
 
 - The body is one WAV recording: 16 kHz, 16-bit, mono PCM (at most 1 MiB, about 30 s).
 - The session is checked before the body is read.
-- The recording is transcribed, sent to the assistant with the same instruction as
-  the text endpoint, and the reply is synthesised as speech. Nothing is stored.
+- The recording is transcribed in the identified language, sent to the assistant with
+  the same instruction as the text endpoint, and the reply is synthesised as speech.
+  Nothing is stored. The client sends no language: the contract is the same for every
+  language.
 - All `/api/voice/*` responses, including errors, carry `Cache-Control: no-store`.
 
 | Status | `detail`                                          | When                                                      |

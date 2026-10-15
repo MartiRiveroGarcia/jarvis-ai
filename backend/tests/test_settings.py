@@ -310,7 +310,7 @@ def test_speech_is_optional_and_off_by_default() -> None:
 
     assert settings.speech_endpoint is None
     assert settings.speech_configured is False
-    assert settings.speech_recognition_language == "ca-ES"
+    assert settings.speech_recognition_languages == ("ca-ES", "es-ES", "en-US", "zh-CN")
     assert settings.speech_voice == "ca-ES-AlbaNeural"
     assert settings.speech_stt_timeout_seconds == 45
     assert settings.speech_tts_timeout_seconds == 20
@@ -318,7 +318,7 @@ def test_speech_is_optional_and_off_by_default() -> None:
 
 def test_speech_is_configured_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("JARVIS_SPEECH_ENDPOINT", SPEECH_ENDPOINT)
-    monkeypatch.setenv("JARVIS_SPEECH_RECOGNITION_LANGUAGE", " es-ES ")
+    monkeypatch.setenv("JARVIS_SPEECH_RECOGNITION_LANGUAGES", '[" es-ES ", "en-US"]')
     monkeypatch.setenv("JARVIS_SPEECH_VOICE", " es-ES-ElviraNeural ")
     monkeypatch.setenv("JARVIS_SPEECH_STT_TIMEOUT_SECONDS", "30")
     monkeypatch.setenv("JARVIS_SPEECH_TTS_TIMEOUT_SECONDS", "10")
@@ -327,7 +327,7 @@ def test_speech_is_configured_from_the_environment(monkeypatch: pytest.MonkeyPat
 
     assert settings.speech_configured is True
     assert settings.speech_endpoint == SPEECH_ENDPOINT
-    assert settings.speech_recognition_language == "es-ES"
+    assert settings.speech_recognition_languages == ("es-ES", "en-US")
     assert settings.speech_voice == "es-ES-ElviraNeural"
     assert settings.speech_stt_timeout_seconds == 30
     assert settings.speech_tts_timeout_seconds == 10
@@ -426,18 +426,102 @@ def test_speech_endpoint_is_excluded_from_repr() -> None:
 
 
 @pytest.mark.parametrize("language", ["ca-ES", "en-US", "es-ES", "fil-PH", "zh-Hans-CN"])
-def test_valid_recognition_languages_are_accepted(language: str) -> None:
-    assert _foundry(speech_recognition_language=language).speech_recognition_language == language
+def test_valid_recognition_locales_are_accepted(language: str) -> None:
+    settings = _foundry(speech_recognition_languages=(language,))
+
+    assert settings.speech_recognition_languages == (language,)
 
 
 @pytest.mark.parametrize(
     "language", ["", " ", "ca", "CA-ES", "ca-es", "ca_ES", "catalan", "ca-ES-x", "ca-ES;", "e-US"]
 )
-def test_invalid_recognition_languages_are_rejected(language: str) -> None:
+def test_invalid_recognition_locales_are_rejected_without_echo(language: str) -> None:
     with pytest.raises(ValidationError) as exc_info:
-        _foundry(speech_recognition_language=language)
+        _foundry(speech_recognition_languages=("ca-ES", language))
 
-    assert "JARVIS_SPEECH_RECOGNITION_LANGUAGE" in str(exc_info.value)
+    message = str(exc_info.value)
+    assert "JARVIS_SPEECH_RECOGNITION_LANGUAGES must contain locales" in message
+    assert "input_value" not in message  # the rejected value is never echoed
+
+
+@pytest.mark.parametrize(
+    "languages",
+    [
+        ("ca-ES",),
+        ("ca-ES", "es-ES"),
+        ("ca-ES", "es-ES", "en-US", "zh-CN"),
+        ("zh-CN", "en-US"),
+        ("fil-PH", "zh-Hans-CN"),
+    ],
+)
+def test_one_to_four_distinct_languages_are_accepted_in_order(languages: tuple[str, ...]) -> None:
+    assert (
+        _foundry(speech_recognition_languages=languages).speech_recognition_languages == languages
+    )
+
+
+def test_recognition_languages_are_trimmed() -> None:
+    settings = _foundry(speech_recognition_languages=[" ca-ES", "es-ES "])
+
+    assert settings.speech_recognition_languages == ("ca-ES", "es-ES")
+
+
+@pytest.mark.parametrize(
+    ("languages", "rule"),
+    [
+        ((), "must list 1 to 4 locales"),
+        (("ca-ES", "es-ES", "en-US", "zh-CN", "fr-FR"), "must list 1 to 4 locales"),
+        (("ca-ES", "ca-ES"), "must not list the same language twice"),
+        (("en-US", "en-GB"), "must not list the same language twice"),
+        (("zh-CN", "zh-Hans-CN"), "must not list the same language twice"),
+    ],
+)
+def test_recognition_language_count_and_duplicates_are_rejected(
+    languages: tuple[str, ...], rule: str
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        _foundry(speech_recognition_languages=languages)
+
+    assert f"JARVIS_SPEECH_RECOGNITION_LANGUAGES {rule}" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ('["ca-ES"]', ("ca-ES",)),
+        ('["zh-CN", "ca-ES"]', ("zh-CN", "ca-ES")),
+    ],
+)
+def test_recognition_languages_are_read_as_json(
+    monkeypatch: pytest.MonkeyPatch, value: str, expected: tuple[str, ...]
+) -> None:
+    monkeypatch.setenv("JARVIS_SPEECH_RECOGNITION_LANGUAGES", value)
+
+    assert Settings(_env_file=None).speech_recognition_languages == expected
+
+
+@pytest.mark.parametrize("value", ["ca-ES", "private-value", '"ca-ES"', "[ca-ES]"])
+def test_recognition_languages_that_are_not_a_json_list_are_rejected_without_echo(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("JARVIS_SPEECH_RECOGNITION_LANGUAGES", value)
+
+    with pytest.raises(Exception) as exc_info:  # SettingsError or ValidationError
+        Settings(_env_file=None)
+
+    assert value not in str(exc_info.value)
+
+
+def test_the_removed_single_language_setting_stops_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JARVIS_SPEECH_RECOGNITION_LANGUAGE", "es-ES")
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=None)
+
+    assert "replaced by JARVIS_SPEECH_RECOGNITION_LANGUAGES" in str(exc_info.value)
+    assert "es-ES" not in str(exc_info.value)
 
 
 @pytest.mark.parametrize(
@@ -503,7 +587,8 @@ def test_there_are_no_speech_key_region_or_identity_settings() -> None:
 
     assert names == {
         "speech_endpoint",
-        "speech_recognition_language",
+        "speech_recognition_languages",
+        "speech_recognition_language",  # removed; only rejects leftover values
         "speech_voice",
         "speech_stt_timeout_seconds",
         "speech_tts_timeout_seconds",

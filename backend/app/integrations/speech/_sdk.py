@@ -9,7 +9,7 @@ RecognitionSink for speech-to-text and a SynthesisOutcome for text-to-speech. It
 never reads the SDK's cancellation error details.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
@@ -21,6 +21,8 @@ SAMPLE_RATE = 16_000
 BITS_PER_SAMPLE = 16
 CHANNELS = 1
 PCM_CHUNK_BYTES = 32_000  # one second of 16 kHz, 16-bit mono audio
+# Identify the language once, at the start of the recording: one utterance per request.
+LANGUAGE_ID_MODE = "AtStart"
 
 
 @dataclass(frozen=True)
@@ -65,20 +67,37 @@ def open_recognition(
     *,
     endpoint: str,
     credential: TokenCredential,
-    language: str,
+    languages: Sequence[str],
     pcm: bytes,
     sink: RecognitionSink,
 ) -> RecognitionSession:
-    """Prepare continuous recognition of [pcm]. Connects nothing until start()."""
+    """Prepare continuous recognition of [pcm]. Connects nothing until start().
+
+    One language: fixed-language recognition. Several: the service identifies which
+    one is spoken at the start, in the same request. The result is never read here.
+    """
     stream_format = speechsdk.audio.AudioStreamFormat(
         samples_per_second=SAMPLE_RATE, bits_per_sample=BITS_PER_SAMPLE, channels=CHANNELS
     )
     stream = speechsdk.audio.PushAudioInputStream(stream_format=stream_format)
     config = _speech_config(endpoint, credential)
-    config.speech_recognition_language = language
-    recognizer = speechsdk.SpeechRecognizer(
-        speech_config=config, audio_config=speechsdk.audio.AudioConfig(stream=stream)
-    )
+    audio_config = speechsdk.audio.AudioConfig(stream=stream)
+    if len(languages) == 1:
+        config.speech_recognition_language = languages[0]
+        recognizer = speechsdk.SpeechRecognizer(speech_config=config, audio_config=audio_config)
+    else:
+        # The recognizer must carry no fixed language as well: the SDK accepts both
+        # silently.
+        config.set_property(
+            speechsdk.PropertyId.SpeechServiceConnection_LanguageIdMode, LANGUAGE_ID_MODE
+        )
+        recognizer = speechsdk.SpeechRecognizer(
+            speech_config=config,
+            audio_config=audio_config,
+            auto_detect_source_language_config=speechsdk.languageconfig.AutoDetectSourceLanguageConfig(
+                languages=list(languages)
+            ),
+        )
     recognizer.recognized.connect(_guarded(lambda evt: translate_recognized(evt, sink)))
     recognizer.canceled.connect(_guarded(lambda evt: sink.on_canceled(cancellation_info(evt))))
     recognizer.session_stopped.connect(_guarded(lambda _evt: sink.on_stopped()))

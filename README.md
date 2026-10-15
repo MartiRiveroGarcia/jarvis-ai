@@ -4,10 +4,11 @@ Jarvis is a voice-first personal AI assistant designed primarily for Android.
 
 The long-term goal is an assistant you talk to, backed by an AI orchestrator that
 decides which tools or specialised agents are needed to complete a request — for
-example searching the web, managing Trello cards or updating an Excel workbook. The
-mobile assistant shell and an authenticated text assistant endpoint backed by
-Microsoft Foundry are implemented; voice interaction, AI agents, tools and Android
-assistant integration are not implemented yet; see the roadmap.
+example searching the web, managing Trello cards or updating an Excel workbook.
+Push-to-talk voice conversations are implemented: you can speak Catalan, Spanish,
+English or Simplified Chinese, and Jarvis normally replies in Catalan, using Azure AI
+Speech and Microsoft Foundry. AI agents, tools and Android assistant integration are
+not implemented yet; see the roadmap.
 
 Jarvis is built incrementally, sprint by sprint, as a learning and portfolio project
 alongside the Microsoft AI-103 certification.
@@ -44,7 +45,7 @@ Done:
 - [x] Text round trip Flutter → FastAPI → Microsoft Foundry → Flutter, verified end to
       end on a physical Android device against the local FastAPI backend and
       Microsoft Foundry deployment
-- [x] Azure AI Speech integration: Catalan speech-to-text and text-to-speech with the
+- [x] Azure AI Speech integration: speech-to-text and text-to-speech with the
       `ca-ES-AlbaNeural` voice, authenticated with Microsoft Entra ID (no keys),
       optional and created lazily
 - [x] Authenticated voice endpoint: `POST /api/voice/respond` (one WAV recording in,
@@ -53,11 +54,9 @@ Done:
       and hear Jarvis's reply
 - [x] Voice round trip phone microphone → FastAPI → Speech → Foundry → Speech → phone
       speaker, verified end to end on a physical Android device
-
-Upcoming in Sprint 02:
-
-- [ ] Speech input in Catalan, Spanish, English and Mandarin, with replies always in
-      Catalan
+- [x] Multilingual spoken input: Azure AI Speech identifies Catalan, Spanish, English or
+      Simplified Chinese at the start of each recording; Jarvis normally replies in
+      Catalan, verified on a physical Android device in all four languages
 
 Not implemented yet: AI agents, tools, RAG and Android assistant integration — see the
 roadmap.
@@ -94,8 +93,9 @@ Layers are added only when there is real code that needs them.
 ### Planned assistant flow
 
 > **Planned — partly implemented.** This is the intended end-to-end design. The voice
-> path exists without agents (push-to-talk recording → FastAPI → speech-to-text →
-> Foundry model → text-to-speech → spoken reply); agents and tool calling do not.
+> path exists without agents (push-to-talk recording → FastAPI → Azure AI Speech
+> language identification and speech-to-text → Foundry model → Azure AI Speech
+> text-to-speech → spoken reply); agents and tool calling do not.
 
 ```text
 Flutter mobile app
@@ -124,8 +124,8 @@ Flutter mobile app
 - Agent configuration and tool integrations stay on the server.
 - The backend is the boundary between the mobile client and Azure services.
 - Requests may start as text internally, which is easier to develop and test.
-- The exact speech services and realtime architecture may change when the voice sprint
-  is implemented.
+- Voice currently uses one push-to-talk recording per request; streaming or realtime
+  voice may come later.
 
 ## Authentication
 
@@ -146,8 +146,9 @@ Details: [backend/README.md](backend/README.md#authentication-api).
 The Flutter app is deliberately minimal and voice-first:
 
 - Login and registration screens.
-- A main assistant screen centred around a push-to-talk voice button: hold to talk,
-  release to send, and Jarvis's reply is spoken. See
+- A main assistant screen centred around a push-to-talk voice button: hold to talk
+  in Catalan, Spanish, English or Simplified Chinese, release to send, and Jarvis's
+  reply is spoken, normally in Catalan. See
   [mobile/README.md](mobile/README.md#push-to-talk).
 - A small settings screen with account details and sign out.
 - A temporary, **debug-only** developer screen (Settings → Developer) sends text to
@@ -171,6 +172,7 @@ Future Android integration (planned, not implemented):
 | Database | SQLAlchemy 2.x, Alembic; SQLite locally, PostgreSQL-compatible                  |
 | Security | Argon2id (`argon2-cffi`), opaque server-side sessions with Bearer tokens        |
 | AI       | Microsoft Foundry (Responses API), Microsoft Entra ID (`azure-identity`)        |
+| Speech   | Azure AI Speech: language identification, speech-to-text, text-to-speech        |
 | Testing  | pytest and Ruff (backend); flutter test and flutter analyze (mobile)            |
 
 ## Local development

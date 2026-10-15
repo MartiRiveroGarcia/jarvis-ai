@@ -17,8 +17,7 @@ the Dart code is kept portable so iOS can be added later (there is no iOS projec
 A temporary, debug-only screen also sends text to the Jarvis assistant and shows its
 reply — see [Developer text assistant](#developer-text-assistant-debug-only).
 
-**Not implemented yet:** speech input in languages other than Catalan, AI agents and
-Android assistant integration.
+**Not implemented yet:** AI agents and Android assistant integration.
 
 ## Prerequisites
 
@@ -88,8 +87,11 @@ The home screen is built around one voice button.
 - **Errors** are short fixed messages ("Jarvis didn't hear anything.", "Couldn't reach
   Jarvis. Check your connection and try again.", …), never status codes or server
   details. An expired session returns you to login.
-- Speech recognition is currently **Catalan**; replies are spoken with the
-  `ca-ES-AlbaNeural` voice.
+- **Languages:** speak Catalan, Spanish, English or Simplified Chinese; there is no
+  language setting in the app, because the backend identifies the language. Jarvis
+  normally replies in Catalan, spoken with the `ca-ES-AlbaNeural` voice, so any
+  foreign-language words you ask for (a translation, for example) may not sound
+  natural.
 
 How it works:
 

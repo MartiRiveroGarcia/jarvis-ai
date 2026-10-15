@@ -54,7 +54,7 @@ class OpenRecognition(Protocol):
         *,
         endpoint: str,
         credential: "TokenCredential",
-        language: str,
+        languages: tuple[str, ...],
         pcm: bytes,
         sink: "RecognitionSink",
     ) -> "RecognitionSession": ...
@@ -82,7 +82,7 @@ class AzureSpeechClient:
         self,
         *,
         endpoint: str,
-        recognition_language: str,
+        recognition_languages: tuple[str, ...],
         stt_timeout_seconds: float,
         voice: str,
         tts_timeout_seconds: float,
@@ -91,7 +91,7 @@ class AzureSpeechClient:
         open_synthesis: OpenSynthesis | None = None,
     ) -> None:
         self._endpoint = endpoint.rstrip("/")
-        self._recognition_language = recognition_language
+        self._recognition_languages = tuple(recognition_languages)
         self._stt_timeout_seconds = stt_timeout_seconds
         self._voice = voice
         self._tts_timeout_seconds = tts_timeout_seconds
@@ -107,7 +107,7 @@ class AzureSpeechClient:
             raise SpeechNotConfiguredError
         return cls(
             endpoint=settings.speech_endpoint,
-            recognition_language=settings.speech_recognition_language,
+            recognition_languages=settings.speech_recognition_languages,
             stt_timeout_seconds=settings.speech_stt_timeout_seconds,
             voice=settings.speech_voice,
             tts_timeout_seconds=settings.speech_tts_timeout_seconds,
@@ -132,7 +132,7 @@ class AzureSpeechClient:
             session = open_recognition(
                 endpoint=self._endpoint,
                 credential=credential,
-                language=self._recognition_language,
+                languages=self._recognition_languages,
                 pcm=audio.pcm,
                 sink=collector,
             )

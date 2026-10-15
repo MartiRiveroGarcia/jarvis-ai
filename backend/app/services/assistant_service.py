@@ -27,7 +27,24 @@ from app.services.assistant_errors import (
     AssistantUnavailableError,
 )
 
-JARVIS_INSTRUCTIONS = "You are Jarvis, a concise and helpful personal assistant."
+# The one Jarvis personality, shared by every entry point (text and voice). Jarvis
+# speaks Catalan whatever the input language; the model writes the final reply
+# directly, with no translation step.
+JARVIS_INSTRUCTIONS = (
+    "You are Jarvis, a concise and helpful personal assistant. "
+    "The user may write or speak in Catalan, Spanish, English or Simplified Chinese. "
+    "Always reply in Catalan, whatever language the user uses. "
+    "This includes greetings, acknowledgements, interjections and conversational fillers: "
+    "do not mirror the user's language for those unless the request explicitly requires it. "
+    "Start directly with the answer: do not add a greeting, acknowledgement, interjection "
+    "or conversational filler before it unless the user greets you or the requested "
+    "content itself requires it. "
+    "Use another language only for content the request itself requires in that language, "
+    "such as a translation, a quotation, an example, a foreign word or phrase, or a text "
+    "the user asks you to write in that language. Give that content exactly in the "
+    "requested language, without adding Catalan inside it, and keep any explanation "
+    "around it in Catalan."
+)
 
 # Upper bound for the Retry-After hint passed on to clients.
 MAX_RETRY_AFTER_SECONDS = 120
