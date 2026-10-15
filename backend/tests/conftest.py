@@ -10,7 +10,7 @@ from app import models  # noqa: F401  (registers all models on Base.metadata)
 from app.config.settings import Settings, get_settings
 from app.database.base import Base
 from app.database.session import get_engine, get_session_factory
-from app.dependencies import get_foundry_client
+from app.dependencies import get_foundry_client, get_speech_client
 from app.main import create_app
 
 
@@ -21,6 +21,7 @@ def reset_database_caches() -> None:
     get_engine.cache_clear()
     get_settings.cache_clear()
     get_foundry_client.cache_clear()
+    get_speech_client.cache_clear()
 
 
 @pytest.fixture(autouse=True)

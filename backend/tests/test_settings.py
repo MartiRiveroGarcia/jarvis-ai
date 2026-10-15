@@ -569,7 +569,7 @@ from app.database.session import get_engine
 # Ignore a developer's local .env, which may configure the real Foundry.
 Settings.model_config["env_file"] = None
 
-from app.dependencies import get_foundry_client
+from app.dependencies import get_foundry_client, get_speech_client
 from app.main import app
 
 assert get_settings().foundry_configured is (sys.argv[1] == "configured")
@@ -589,6 +589,7 @@ assert used == [], used
 # The native Speech SDK is never loaded at startup or by other endpoints.
 assert not [m for m in sys.modules if m.startswith("azure.cognitiveservices")]
 assert get_foundry_client.cache_info().currsize == 0
+assert get_speech_client.cache_info().currsize == 0
 """
 
 

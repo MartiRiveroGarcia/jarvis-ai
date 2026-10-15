@@ -44,17 +44,23 @@ Done:
 - [x] Text round trip Flutter → FastAPI → Microsoft Foundry → Flutter, verified end to
       end on a physical Android device against the local FastAPI backend and
       Microsoft Foundry deployment
+- [x] Azure AI Speech integration: Catalan speech-to-text and text-to-speech with the
+      `ca-ES-AlbaNeural` voice, authenticated with Microsoft Entra ID (no keys),
+      optional and created lazily
+- [x] Authenticated voice endpoint: `POST /api/voice/respond` (one WAV recording in,
+      one spoken MP3 reply out)
+- [x] Push-to-talk in the mobile app: hold the voice button to talk, release to send,
+      and hear Jarvis's reply
+- [x] Voice round trip phone microphone → FastAPI → Speech → Foundry → Speech → phone
+      speaker, verified end to end on a physical Android device
 
 Upcoming in Sprint 02:
 
-- [ ] Speech-to-text with Azure AI Speech
-- [ ] Text-to-speech with Azure AI Speech
-- [ ] Push-to-talk in the mobile app
+- [ ] Speech input in Catalan, Spanish, English and Mandarin, with replies always in
+      Catalan
 
-The app's voice button is still visual only; voice interaction is not implemented.
-
-Not implemented yet: voice interaction, AI agents, tools, RAG and Android assistant
-integration — see the roadmap.
+Not implemented yet: AI agents, tools, RAG and Android assistant integration — see the
+roadmap.
 
 ## Architecture
 
@@ -72,24 +78,24 @@ iOS-compatible where practical. There is no web/browser frontend. See
 
 **Backend (implemented).** An MVC-inspired layered design adapted to FastAPI:
 
-| Layer        | Responsibility                                              | Status      |
-| ------------ | ----------------------------------------------------------- | ----------- |
-| Controllers  | FastAPI routers: HTTP handling, validation, error mapping   | Implemented |
-| Schemas      | Pydantic request/response contracts                         | Implemented |
-| Services     | Use cases and transaction ownership (auth, text assistant)  | Implemented |
-| Repositories | Persistence queries; never commit                           | Implemented |
-| Models       | SQLAlchemy ORM models                                       | Implemented |
-| Security     | Password hashing, password policy, session tokens           | Implemented |
-| Config       | Settings loaded from environment variables                  | Implemented |
-| Integrations | Isolated clients: Foundry (done); Trello, Graph (planned)   | Partial     |
+| Layer        | Responsibility                                                    | Status      |
+| ------------ | ----------------------------------------------------------------- | ----------- |
+| Controllers  | FastAPI routers: HTTP handling, validation, error mapping         | Implemented |
+| Schemas      | Pydantic request/response contracts                               | Implemented |
+| Services     | Use cases and transaction ownership (auth, assistant, voice)      | Implemented |
+| Repositories | Persistence queries; never commit                                 | Implemented |
+| Models       | SQLAlchemy ORM models                                             | Implemented |
+| Security     | Password hashing, password policy, session tokens                 | Implemented |
+| Config       | Settings loaded from environment variables                        | Implemented |
+| Integrations | Isolated clients: Foundry, Speech (done); Trello, Graph (planned) | Partial     |
 
 Layers are added only when there is real code that needs them.
 
 ### Planned assistant flow
 
-> **Planned — mostly not implemented.** This is the intended end-to-end design. So
-> far only the text path exists (authenticated text request → FastAPI → Foundry model
-> → text reply); speech, agents and tool calling do not.
+> **Planned — partly implemented.** This is the intended end-to-end design. The voice
+> path exists without agents (push-to-talk recording → FastAPI → speech-to-text →
+> Foundry model → text-to-speech → spoken reply); agents and tool calling do not.
 
 ```text
 Flutter mobile app
@@ -140,13 +146,13 @@ Details: [backend/README.md](backend/README.md#authentication-api).
 The Flutter app is deliberately minimal and voice-first:
 
 - Login and registration screens.
-- A main assistant screen centred around a voice button. The button is still
-  **visual only**: it records nothing, requests no microphone permission and calls no
-  service.
+- A main assistant screen centred around a push-to-talk voice button: hold to talk,
+  release to send, and Jarvis's reply is spoken. See
+  [mobile/README.md](mobile/README.md#push-to-talk).
 - A small settings screen with account details and sign out.
 - A temporary, **debug-only** developer screen (Settings → Developer) sends text to
-  the assistant and shows the reply. It exists only to test the backend round trip
-  before speech and will be replaced by the voice flow.
+  the assistant and shows the reply. It is kept to test the text path on its own,
+  separately from speech.
 
 Future Android integration (planned, not implemented):
 
