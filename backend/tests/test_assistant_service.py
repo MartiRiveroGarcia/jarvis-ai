@@ -69,7 +69,96 @@ def failure(error: FoundryError) -> AssistantError:
 
 
 def test_instruction_is_the_fixed_jarvis_instruction() -> None:
-    assert JARVIS_INSTRUCTIONS == "You are Jarvis, a concise and helpful personal assistant."
+    assert JARVIS_INSTRUCTIONS == (
+        "You are Jarvis, a concise and helpful personal assistant. "
+        "The user may write or speak in Catalan, Spanish, English or Simplified Chinese. "
+        "Always reply in Catalan, whatever language the user uses. "
+        "This includes greetings, acknowledgements, interjections and conversational "
+        "fillers: do not mirror the user's language for those unless the request "
+        "explicitly requires it. "
+        "Start directly with the answer: do not add a greeting, acknowledgement, "
+        "interjection or conversational filler before it unless the user greets you or "
+        "the requested content itself requires it. "
+        "Use another language only for content the request itself requires in that "
+        "language, such as a translation, a quotation, an example, a foreign word or "
+        "phrase, or a text the user asks you to write in that language. Give that content "
+        "exactly in the requested language, without adding Catalan inside it, and keep any "
+        "explanation around it in Catalan."
+    )
+
+
+def test_instruction_makes_catalan_the_reply_language_for_every_input_language() -> None:
+    assert "Always reply in Catalan, whatever language the user uses." in JARVIS_INSTRUCTIONS
+    for language in ("Catalan", "Spanish", "English", "Simplified Chinese"):
+        assert language in JARVIS_INSTRUCTIONS, language
+
+
+def test_instruction_keeps_greetings_and_fillers_in_catalan_too() -> None:
+    for marker in ("greetings", "acknowledgements", "interjections", "conversational fillers"):
+        assert marker in JARVIS_INSTRUCTIONS, marker
+    assert "do not mirror the user's language for those" in JARVIS_INSTRUCTIONS
+
+
+def test_instruction_asks_for_a_direct_answer_without_an_opening_filler() -> None:
+    assert "Start directly with the answer" in JARVIS_INSTRUCTIONS
+    assert (
+        "do not add a greeting, acknowledgement, interjection or conversational filler "
+        "before it unless the user greets you or the requested content itself requires it"
+    ) in JARVIS_INSTRUCTIONS
+
+
+def test_instruction_still_allows_requested_foreign_language_content() -> None:
+    for allowed in (
+        "a translation",
+        "a quotation",
+        "an example",
+        "a foreign word or phrase",
+        "a text the user asks you to write in that language",
+    ):
+        assert allowed in JARVIS_INSTRUCTIONS, allowed
+    # The requested content stays intact; only the framing is Catalan.
+    assert "without adding Catalan inside it" in JARVIS_INSTRUCTIONS
+    assert "keep any explanation around it in Catalan" in JARVIS_INSTRUCTIONS
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Quants dies té una setmana?",
+        "¿Cuántos días tiene una semana?",
+        "How many days are in a week?",
+        "一个星期有几天？",
+    ],
+)
+def test_every_input_language_reaches_the_model_unchanged_in_one_call(message: str) -> None:
+    generator = FakeGenerator()
+
+    service_for(generator).respond(a_user(), message)
+
+    # The policy is the instruction; the user's words stay the user's input.
+    assert generator.calls == [{"instructions": JARVIS_INSTRUCTIONS, "user_input": message}]
+    assert message not in JARVIS_INSTRUCTIONS
+
+
+def test_the_reply_is_returned_exactly_as_the_model_wrote_it() -> None:
+    # No translation or rewriting after the model: requested foreign content survives.
+    reply = "En anglès és: 'Good morning.'"
+
+    assert service_for(FakeGenerator(reply=reply)).respond(a_user(), MESSAGE) == reply
+
+
+def test_the_service_has_one_model_call_and_no_translation_step() -> None:
+    tree = ast.parse(Path(assistant_module.__file__).read_text())
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "generate"
+    ]
+    assert len(calls) == 1
+    services = Path(assistant_module.__file__).parent
+    assert not [path.name for path in services.glob("*.py") if "translat" in path.name]
 
 
 def test_respond_makes_exactly_one_call_with_instruction_and_message() -> None:
