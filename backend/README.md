@@ -1,7 +1,9 @@
 # Jarvis backend
 
-FastAPI service that will host Jarvis's API, AI logic and integrations.
-It currently exposes a health check and the authentication API.
+FastAPI service that hosts Jarvis's API, AI logic and integrations.
+It currently exposes a health check, the authentication API, a text assistant
+endpoint backed by Microsoft Foundry and a voice endpoint that adds Azure AI Speech
+(both optional).
 
 ## Requirements
 
@@ -63,8 +65,14 @@ Settings are read from environment variables prefixed with `JARVIS_`, or from
 | `JARVIS_REGISTRATION_ENABLED` | `true`                          | Allow public sign-up; disable in production after creating your account |
 | `DATABASE_URL`                | `sqlite:///<backend>/jarvis.db` | SQLAlchemy database URL (no `JARVIS_` prefix)                           |
 
-`.env` is ignored by Git. Never commit secrets; add new variables to `.env.example`
-with a placeholder value instead.
+The optional Microsoft Foundry settings (`JARVIS_FOUNDRY_*`) are described in
+[Microsoft Foundry (optional)](#microsoft-foundry-optional), and the optional Azure AI
+Speech settings (`JARVIS_SPEECH_*`) in
+[Azure AI Speech (optional)](#azure-ai-speech-optional).
+
+`.env` is ignored by Git. Never commit `.env` files, credentials, tokens, keys or
+environment-specific endpoint values; add new variables to `.env.example` with a
+placeholder value instead.
 
 ### Database URL
 
@@ -142,6 +150,272 @@ In `/docs`, use **Authorize** and paste the session token.
 - There is no CORS or CSRF handling: native clients are not subject to browser CORS or
   CSRF. A future browser client would need its own design.
 
+## Microsoft Foundry (optional)
+
+The assistant endpoint sends each message to a model deployment in a
+[Microsoft Foundry](https://learn.microsoft.com/en-us/azure/foundry/how-to/develop/sdk-overview)
+project through the
+[Responses API](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/responses).
+
+Foundry is **optional**. Without it, the backend starts and works normally (health and
+authentication included); only `POST /api/assistant/respond` returns
+`503 The assistant is not available`.
+
+### Prerequisites
+
+- A Foundry project with a deployed model. The integration has been verified end to
+  end with a `gpt-5-mini` deployment and `reasoning.effort = "low"`.
+- Your identity needs the **Foundry User** role (shown as **Azure AI User** in some
+  places) on the project or a parent scope. See
+  [role-based access control for Foundry](https://learn.microsoft.com/en-us/azure/foundry/concepts/rbac-foundry).
+  Management-plane access does not by itself grant permission to call the model. The
+  identity still needs the appropriate Foundry data-plane role. An Owner can assign
+  that role; a Contributor cannot assign Azure RBAC roles.
+
+### Authentication: Microsoft Entra ID, no API keys
+
+The backend authenticates with Microsoft Entra ID through `DefaultAzureCredential`
+(`azure-identity`). There are **no API keys**, and deliberately no setting for one.
+
+- **Local development:** the credential uses your Azure CLI login (`az login`).
+- **Deployed in Azure (planned):** a
+  [managed identity](https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/overview)
+  with the same role on the project, picked up by the same credential chain without
+  code changes. See
+  [credential chains](https://learn.microsoft.com/en-us/azure/developer/python/sdk/authentication/credential-chains).
+
+### Azure CLI (local development)
+
+Install the Azure CLI by following Microsoft's
+[Linux installation guide](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli-linux?pivots=apt)
+(or the guide for your OS), then sign in:
+
+```bash
+az login                      # add --tenant <tenant> if the project is in another tenant
+az account show -o table      # confirm the active account and subscription
+az account set --subscription "<subscription name or id>"   # only if needed
+```
+
+**Linux Mint:** Linux Mint 21.x is based on Ubuntu `jammy`. When configuring
+Microsoft's apt repository, use the Ubuntu base codename (`jammy`) rather than Mint's
+own release name, which `lsb_release -cs` returns.
+
+See [Sign in with the Azure CLI](https://learn.microsoft.com/en-us/cli/azure/authenticate-azure-cli)
+for other sign-in options.
+
+### Settings
+
+Set the endpoint and model **together, or neither**; setting only one stops the
+backend at startup. Invalid values are rejected at startup with a message that never
+repeats the value.
+
+| Variable                           | Default | Description                                                                          |
+| ---------------------------------- | ------- | ------------------------------------------------------------------------------------ |
+| `JARVIS_FOUNDRY_PROJECT_ENDPOINT`  | unset   | Project endpoint from the project's Overview page (HTTPS, no query or credentials)   |
+| `JARVIS_FOUNDRY_MODEL`             | unset   | The **deployment name** to call (letters, digits, `.`, `-`, `_`; up to 64 chars)     |
+| `JARVIS_FOUNDRY_TIMEOUT_SECONDS`   | `25`    | Timeout for one Foundry request in seconds (1–120)                                   |
+| `JARVIS_FOUNDRY_MAX_OUTPUT_TOKENS` | `2000`  | Output budget per request (16–16384); for reasoning models it includes the reasoning |
+
+```bash
+# backend/.env (placeholders; use your own values)
+JARVIS_FOUNDRY_PROJECT_ENDPOINT=https://<resource>.services.ai.azure.com/api/projects/<project>
+JARVIS_FOUNDRY_MODEL=<deployment-name>
+```
+
+No model is hard-coded: `JARVIS_FOUNDRY_MODEL` is always the configured deployment
+name. Requests currently send `reasoning.effort = "low"`, which suits `gpt-5-mini`;
+other deployments may need different model-specific parameters later.
+
+### Behaviour
+
+- **Lazy initialisation:** starting the app creates no Azure credential, requests no
+  token and makes no Foundry call. The client, credential and SDK client are created
+  on the first assistant request and reused for the life of the process.
+- **Stateless requests:** each call sends a fixed Jarvis instruction (which also sets
+  the reply language; see [Languages](#languages)) plus the user's message with
+  `store=false`. There is no history, conversation id or
+  `previous_response_id`, and nothing is stored by Jarvis.
+- **No automatic retries** (`max_retries=0`): one Jarvis request makes at most one
+  Foundry request.
+
+### Troubleshooting
+
+Each failed assistant request is logged once by the `jarvis.assistant` logger with
+metadata only, for example:
+
+```text
+assistant request failed: error=FoundryUnavailableError reason=forbidden status_code=403 request_id=<id>
+```
+
+| `reason`                       | HTTP      | Likely cause and fix                                                                |
+| ------------------------------ | --------- | ----------------------------------------------------------------------------------- |
+| `not_configured`               | 503       | Endpoint and model not set (logged at INFO)                                         |
+| `credential`                   | 503       | Not signed in or expired login: run `az login` (with `--tenant` if needed)          |
+| `unauthorized` (401)           | 503       | Signed in to the wrong tenant                                                       |
+| `forbidden` (403)              | 503       | Missing Foundry User role, or a new assignment not applied yet (wait a few minutes) |
+| `not_found` (404)              | 503       | Wrong project endpoint or deployment name                                           |
+| `bad_request` (400/422)        | 503       | The deployment rejected a request parameter (for example a model-specific option)   |
+| `incomplete_max_output_tokens` | 503       | The output budget ran out; raise `JARVIS_FOUNDRY_MAX_OUTPUT_TOKENS`                 |
+| `connection` / `timeout`       | 503 / 504 | Network or proxy problem, or a slow response                                        |
+| `rate_limited` (429)           | 429       | Deployment quota reached; retry later or raise the deployment's quota               |
+| `content_filter` / `refusal`   | 422       | The request was declined by content filtering or the model                          |
+
+`request_id` is Foundry's request identifier, useful when contacting Azure support; it
+contains no content.
+
+## Assistant API
+
+| Endpoint                      | Auth   | Success                | Errors                            |
+| ----------------------------- | ------ | ---------------------- | --------------------------------- |
+| `POST /api/assistant/respond` | Bearer | `200` `{"reply": ...}` | `401`, `422`, `429`, `503`, `504` |
+
+```bash
+curl -X POST localhost:8000/api/assistant/respond \
+  -H "Authorization: Bearer <session_token>" -H "Content-Type: application/json" \
+  -d '{"message": "Explain what RAG is in one short sentence."}'
+# {"reply": "<the model's answer>"}
+```
+
+- `message` is required; surrounding whitespace is trimmed, then it must be 1–4000
+  characters. Unknown fields are rejected.
+- Each request is independent: no history is kept and nothing is stored.
+- All `/api/assistant/*` responses, including errors, carry `Cache-Control: no-store`.
+
+| Status | `detail`                                          | When                                                          |
+| ------ | ------------------------------------------------- | ------------------------------------------------------------- |
+| `401`  | `Invalid or expired session`                      | Missing or invalid session (checked before the body)          |
+| `422`  | list of field errors (never echoes the message)   | Invalid body                                                  |
+| `422`  | `The assistant couldn't answer that request`      | Declined by content filtering or the model                    |
+| `429`  | `The assistant is busy. Please try again shortly` | Rate limited; `Retry-After` (seconds, at most 120) when known |
+| `503`  | `The assistant is not available`                  | Foundry is not configured                                     |
+| `503`  | `The assistant is temporarily unavailable`        | Foundry failed or returned an unusable response               |
+| `504`  | `The assistant took too long to respond`          | Timeout                                                       |
+
+Error responses never include Foundry error details, the endpoint or the deployment
+name.
+
+## Azure AI Speech (optional)
+
+The voice endpoint uses [Azure AI Speech](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/)
+through the Speech SDK (`azure-cognitiveservices-speech`) for spoken-language
+identification, speech-to-text and text-to-speech, and Microsoft Foundry for the reply
+in between.
+
+Speech is **optional**. Without it, the backend starts and works normally; only
+`POST /api/voice/respond` returns `503 The assistant is not available`. The voice
+endpoint also needs Foundry.
+
+### Prerequisites and authentication
+
+- A Speech resource with a **custom domain**, which Microsoft Entra ID authentication
+  requires.
+- Your identity (or the deployed managed identity) needs the **Cognitive Services
+  Speech User** role on the resource.
+- Authentication uses the same `DefaultAzureCredential` as Foundry (`az login`
+  locally). There is deliberately **no key or region setting**.
+
+### Settings
+
+Invalid values are rejected at startup with a message that never repeats the value.
+
+| Variable                              | Default                             | Description                                                          |
+| ------------------------------------- | ----------------------------------- | -------------------------------------------------------------------- |
+| `JARVIS_SPEECH_ENDPOINT`              | unset                               | Custom-domain endpoint, `https://<name>.cognitiveservices.azure.com` |
+| `JARVIS_SPEECH_RECOGNITION_LANGUAGES` | `["ca-ES","es-ES","en-US","zh-CN"]` | Spoken languages: JSON list of 1–4 locales, one per language         |
+| `JARVIS_SPEECH_VOICE`                 | `ca-ES-AlbaNeural`                  | Text-to-speech voice                                                 |
+| `JARVIS_SPEECH_STT_TIMEOUT_SECONDS`   | `45`                                | Speech-to-text limit per request in seconds (1–120)                  |
+| `JARVIS_SPEECH_TTS_TIMEOUT_SECONDS`   | `20`                                | Text-to-speech limit per request in seconds (1–120)                  |
+
+```bash
+# backend/.env (placeholder; use your own value)
+JARVIS_SPEECH_ENDPOINT=https://<custom-domain>.cognitiveservices.azure.com
+```
+
+### Languages
+
+- **Input:** by default the user may speak Catalan (`ca-ES`), Spanish (`es-ES`),
+  English (`en-US`) or Simplified Chinese (`zh-CN`).
+- `JARVIS_SPEECH_RECOGNITION_LANGUAGES` is a JSON list of 1–4 locales, with at most one
+  locale per language (for example, not both `en-US` and `en-GB`):
+  - **one locale:** fixed-language speech-to-text;
+  - **two to four locales:** Azure AI Speech
+    [language identification](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/language-identification)
+    picks the spoken language at the start of each recording, in the same recognition
+    request as the transcription.
+- The former single-locale `JARVIS_SPEECH_RECOGNITION_LANGUAGE` is no longer accepted:
+  if it is still set, the backend stops at startup and names the replacement.
+- **Replies:** Jarvis normally replies in Catalan whatever the input language, through
+  the shared assistant instruction used by both the text and voice endpoints (one model
+  call, no translation step). Content the user explicitly asks for in another language,
+  such as a translation, a quotation, an example or a whole text, is still given in that
+  language. This is model behaviour, not a hard guarantee.
+- **Voice:** replies are always spoken with `JARVIS_SPEECH_VOICE` (`ca-ES-AlbaNeural`
+  by default); the voice does not change with the input language.
+
+Limitations:
+
+- Language identification always chooses one of the configured languages, so speech
+  in another language may be misrecognised as one of them.
+- A recording that mixes languages is transcribed in the language identified at its
+  start.
+- Foreign-language content in a reply is spoken by the Catalan voice and may not sound
+  natural.
+
+### Behaviour
+
+- **Lazy initialisation:** starting the app loads no Speech library, creates no
+  credential and makes no Speech call. The client is created on the first voice
+  request and reused.
+- **In memory only:** the recording is streamed to Speech from memory, and the spoken
+  reply is returned as MP3 (24 kHz, 48 kbit/s, mono) without being played or written
+  to disk on the server.
+- **Bounded:** each speech-to-text and text-to-speech call is limited by its timeout.
+- **The detected language is not stored or logged.**
+
+## Voice API
+
+| Endpoint                  | Auth   | Request body           | Success                     | Errors                                          |
+| ------------------------- | ------ | ---------------------- | --------------------------- | ----------------------------------------------- |
+| `POST /api/voice/respond` | Bearer | `audio/wav`, ≤ 1 MiB   | `200` `audio/mpeg` (MP3)    | `401`, `413`, `415`, `422`, `429`, `503`, `504` |
+
+```bash
+curl -X POST localhost:8000/api/voice/respond \
+  -H "Authorization: Bearer <session_token>" -H "Content-Type: audio/wav" \
+  --data-binary @question.wav -o reply.mp3
+```
+
+- The body is one WAV recording: 16 kHz, 16-bit, mono PCM (at most 1 MiB, about 30 s).
+- The session is checked before the body is read.
+- The recording is transcribed in the identified language, sent to the assistant with
+  the same instruction as the text endpoint, and the reply is synthesised as speech.
+  Nothing is stored. The client sends no language: the contract is the same for every
+  language.
+- All `/api/voice/*` responses, including errors, carry `Cache-Control: no-store`.
+
+| Status | `detail`                                          | When                                                      |
+| ------ | ------------------------------------------------- | --------------------------------------------------------- |
+| `401`  | `Invalid or expired session`                      | Missing or invalid session                                |
+| `413`  | `The recording is too large`                      | Body over 1 MiB                                           |
+| `415`  | `The recording must be a WAV file`                | `Content-Type` is not `audio/wav`                         |
+| `422`  | `The recording could not be processed`            | Not a usable 16 kHz mono 16-bit WAV                       |
+| `422`  | `Jarvis didn't hear anything`                     | No speech recognised                                      |
+| `422`  | `The assistant couldn't answer that request`      | Declined by content filtering or the model                |
+| `429`  | `The assistant is busy. Please try again shortly` | Speech or Foundry rate limited                            |
+| `503`  | `The assistant is not available`                  | Speech or Foundry is not configured                       |
+| `503`  | `The assistant is temporarily unavailable`        | Speech or Foundry failed or returned an unusable response |
+| `504`  | `The assistant took too long to respond`          | Timeout                                                   |
+
+Each failed voice request is logged once by the `jarvis.voice` logger with metadata
+only, for example:
+
+```text
+voice request failed: stage=stt error=SpeechNoSpeechError reason=no_speech code=None
+```
+
+`stage` is `stt`, `assistant` or `tts`; assistant failures are also logged by
+`jarvis.assistant` as described above. Logs never contain audio, audio sizes,
+transcripts, replies or Speech error details.
+
 ## Security notes
 
 - Passwords are hashed with **Argon2id** (`argon2-cffi`), using parameters pinned to
@@ -167,23 +441,37 @@ In `/docs`, use **Authorize** and paste the session token.
   hashes. Production infrastructure must preserve this rule: reverse proxies,
   ingress/load balancers, APM/observability agents and request tracing must not log
   or capture the `Authorization` header or authentication request bodies.
+- **Microsoft Foundry:** access uses Microsoft Entra ID only (Azure CLI locally,
+  managed identity when deployed); there are no API keys. The mobile app never holds
+  Foundry or Azure credentials and never calls Azure directly.
+- Assistant messages and replies are never stored or logged; failures are logged with
+  metadata only (error type, reason, status code, Foundry request id).
+- **Azure AI Speech:** access uses Microsoft Entra ID only, with no keys. Voice
+  recordings, transcripts and spoken replies are never stored or logged, and audio is
+  never written to disk; failures are logged with metadata only (stage, error type,
+  reason, SDK error code).
+- Never commit `.env` files, credentials, tokens, keys or environment-specific
+  endpoint values. Documentation uses placeholders only.
+- Automated tests isolate themselves from local Foundry and Speech configuration and
+  do not make real Foundry or Speech calls.
 
 ## Structure
 
 ```text
 app/
 ├── main.py           # create_app() factory: builds the app and registers routers
-├── dependencies.py   # shared FastAPI dependencies (auth service, Bearer token, current user)
+├── dependencies.py   # shared FastAPI dependencies (auth, current user, assistant service)
 ├── config/           # environment-based settings
 ├── controllers/      # FastAPI routers and HTTP error handlers (HTTP layer)
 ├── database/         # SQLAlchemy base, engine, session factory, get_db, UTC datetime type
+├── integrations/
+│   ├── foundry/      # Foundry Responses API client and its errors (Entra ID, lazy)
+│   └── speech/       # Azure AI Speech client, SDK adapter, WAV checks (Entra ID, lazy)
 ├── models/           # SQLAlchemy ORM models (database tables)
 ├── repositories/     # persistence queries; flush only, never commit
 ├── schemas/          # Pydantic schemas (API contracts)
 ├── security/         # password hashing, password policy, session token utilities
-└── services/         # use cases (AuthService); own commit/rollback
+└── services/         # use cases (auth, assistant, voice assistant); own commit/rollback
 alembic/              # database migrations (env.py reads DATABASE_URL via Settings)
 tests/                # pytest suite
 ```
-
-Further layers (`integrations/`) will be added when there is real logic to put in them.

@@ -1,6 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- Required for every build type to reach the Jarvis API. -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Push-to-talk: the microphone is used only while the user holds the voice
+         button, with the app in the foreground. No background or assistant use. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
 
     <!-- networkSecurityConfig: HTTPS only, except in debug builds (src/debug overrides it).
          allowBackup / dataExtractionRules: keep app data, including the encrypted session

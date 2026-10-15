@@ -96,7 +96,12 @@ final class ServerException extends ApiException {
     required super.method,
     required super.path,
     required int super.statusCode,
+    this.detail,
   }) : super(message: 'The server encountered an error');
+
+  /// The backend's short `detail` string, if the body had one. Only for telling
+  /// known backend states apart: never display it. Not included in toString().
+  final String? detail;
 }
 
 /// Any other status code, or a response that is not the expected JSON.

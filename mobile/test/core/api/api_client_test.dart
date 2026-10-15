@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -306,6 +307,33 @@ void main() {
       });
     }
 
+    test('5xx keeps a short JSON detail, outside toString()', () async {
+      final error = await errorFor(
+        http.Response('{"detail": "Server detail text"}', 503),
+      );
+
+      expect(error, isA<ServerException>());
+      expect((error as ServerException).detail, 'Server detail text');
+      expect(error.message, 'The server encountered an error');
+      expect(error.toString(), isNot(contains('Server detail text')));
+    });
+
+    test('5xx without a JSON detail has a null detail', () async {
+      for (final body in ['<html>Bad gateway</html>', '', '{"other": 1}']) {
+        final error = await errorFor(http.Response(body, 502));
+
+        expect((error as ServerException).detail, isNull, reason: body);
+      }
+    });
+
+    test('5xx detail is truncated like other details', () async {
+      final error = await errorFor(
+        http.Response(jsonEncode({'detail': 'x' * 1000}), 503),
+      );
+
+      expect((error as ServerException).detail!.length, 200);
+    });
+
     test('other status codes -> UnexpectedResponseException', () async {
       expect(
         await errorFor(http.Response('{"detail": "teapot"}', 418)),
@@ -385,6 +413,74 @@ void main() {
     });
   });
 
+  group('timeouts', () {
+    Future<http.Response> slow(http.Request _) => Future.delayed(
+      const Duration(milliseconds: 200),
+      () => http.Response('{}', 200),
+    );
+
+    test('the default timeout is 15 seconds', () {
+      final client = ApiClient(
+        baseUrl: _base,
+        httpClient: MockClient((_) => _json({})),
+        tokenStore: InMemoryTokenStore(),
+      );
+
+      expect(client.timeout, const Duration(seconds: 15));
+    });
+
+    test('calls without an override use the client timeout', () async {
+      final (:client, requests: _, store: _) = _setUp(
+        slow,
+        timeout: const Duration(milliseconds: 10),
+      );
+
+      await expectLater(
+        client.post('/api/auth/login', body: {}),
+        throwsA(isA<NetworkException>()),
+      );
+    });
+
+    test('a longer per-request timeout lets a slow request finish', () async {
+      final (:client, requests: _, store: _) = _setUp(
+        slow,
+        timeout: const Duration(milliseconds: 10),
+      );
+
+      expect(
+        await client.post(
+          '/api/auth/login',
+          body: {},
+          timeout: const Duration(seconds: 5),
+        ),
+        <String, Object?>{},
+      );
+    });
+
+    test(
+      'a shorter per-request timeout applies to that request only',
+      () async {
+        final (:client, requests: _, store: _) = _setUp(slow);
+
+        await expectLater(
+          client.post(
+            '/api/auth/login',
+            body: {},
+            timeout: const Duration(milliseconds: 10),
+          ),
+          throwsA(
+            isA<NetworkException>().having(
+              (e) => e.isTimeout,
+              'isTimeout',
+              true,
+            ),
+          ),
+        );
+        expect(await client.post('/api/auth/login', body: {}), isEmpty);
+      },
+    );
+  });
+
   test('the client never prints anything', () async {
     final printed = <String?>[];
     final original = debugPrint;
@@ -403,5 +499,401 @@ void main() {
         .then((_) {}, onError: (Object _) {});
 
     expect(printed, isEmpty);
+  });
+
+  group('postBinary', () {
+    final payload = Uint8List.fromList(List.generate(1024, (i) => i % 256));
+    final audio = Uint8List.fromList(List.generate(300, (i) => 255 - i % 256));
+    const maxBytes = 1000;
+
+    ({
+      ApiClient client,
+      List<({http.BaseRequest request, Uint8List body})> sent,
+      InMemoryTokenStore store,
+      List<int> pulled,
+    })
+    binarySetUp(
+      http.StreamedResponse Function(List<int> pulled) respond, {
+      AuthSession? session,
+      Duration timeout = const Duration(seconds: 15),
+    }) {
+      final sent = <({http.BaseRequest request, Uint8List body})>[];
+      final pulled = <int>[];
+      final store = InMemoryTokenStore(session);
+      final client = ApiClient(
+        baseUrl: _base,
+        httpClient: MockClient.streaming((request, bodyStream) async {
+          sent.add((request: request, body: await bodyStream.toBytes()));
+          return respond(pulled);
+        }),
+        tokenStore: store,
+        timeout: timeout,
+      );
+      return (client: client, sent: sent, store: store, pulled: pulled);
+    }
+
+    /// A response whose body arrives in [chunks]; records each chunk pulled.
+    http.StreamedResponse streamed(
+      List<int> pulled,
+      List<List<int>> chunks, {
+      int status = 200,
+      Map<String, String> headers = const {'content-type': 'audio/mpeg'},
+      bool declareLength = true,
+    }) {
+      Stream<List<int>> body() async* {
+        for (final chunk in chunks) {
+          pulled.add(chunk.length);
+          yield chunk;
+        }
+      }
+
+      final total = chunks.fold<int>(0, (sum, chunk) => sum + chunk.length);
+      return http.StreamedResponse(
+        body(),
+        status,
+        contentLength: declareLength ? total : null,
+        headers: headers,
+      );
+    }
+
+    Future<BinaryResponse> post(
+      ApiClient client, {
+      bool authenticated = true,
+    }) => client.postBinary(
+      '/api/voice/respond',
+      body: payload,
+      contentType: 'audio/wav',
+      accept: 'audio/mpeg',
+      maxResponseBytes: maxBytes,
+      authenticated: authenticated,
+    );
+
+    test('sends the exact bytes and headers, with Bearer auth', () async {
+      final (:client, :sent, store: _, pulled: _) = binarySetUp(
+        (pulled) => streamed(pulled, [audio]),
+        session: _session(),
+      );
+
+      await post(client);
+
+      final [(:request, :body)] = sent;
+      expect(request.method, 'POST');
+      expect(
+        request.url.toString(),
+        'https://api.example.com/api/voice/respond',
+      );
+      expect(body, payload); // every byte value 0..255, unchanged
+      expect(request.headers, {
+        'Accept': 'audio/mpeg',
+        'Content-Type': 'audio/wav',
+        'Authorization': 'Bearer $_token',
+      });
+    });
+
+    test('an unauthenticated binary request sends no Authorization', () async {
+      final (:client, :sent, store: _, pulled: _) = binarySetUp(
+        (pulled) => streamed(pulled, [audio]),
+        session: _session(),
+      );
+
+      await post(client, authenticated: false);
+
+      expect(sent.single.request.headers.containsKey('Authorization'), isFalse);
+    });
+
+    test('without a stored session nothing is sent', () async {
+      final (:client, :sent, store: _, pulled: _) = binarySetUp(
+        (pulled) => streamed(pulled, [audio]),
+      );
+
+      await expectLater(post(client), throwsA(isA<UnauthorizedException>()));
+      expect(sent, isEmpty);
+    });
+
+    test('returns the exact bytes and the parsed media type', () async {
+      final (:client, sent: _, store: _, pulled: _) = binarySetUp(
+        (pulled) => streamed(
+          pulled,
+          [audio.sublist(0, 100), audio.sublist(100)],
+          headers: {'content-type': 'AUDIO/MPEG; charset=x'},
+        ),
+        session: _session(),
+      );
+
+      final response = await post(client);
+
+      expect(response.bytes, audio);
+      expect(response.mediaType, 'audio/mpeg');
+    });
+
+    test('a missing content type is reported as null', () async {
+      final (:client, sent: _, store: _, pulled: _) = binarySetUp(
+        (pulled) => streamed(pulled, [audio], headers: const {}),
+        session: _session(),
+      );
+
+      expect((await post(client)).mediaType, isNull);
+    });
+
+    test('exactly the maximum size is accepted', () async {
+      final (:client, sent: _, store: _, pulled: _) = binarySetUp(
+        (pulled) => streamed(pulled, [List.filled(maxBytes, 7)]),
+        session: _session(),
+      );
+
+      expect((await post(client)).bytes.length, maxBytes);
+    });
+
+    test(
+      'a declared Content-Length over the cap is rejected before reading',
+      () async {
+        final (:client, sent: _, store: _, :pulled) = binarySetUp(
+          (pulled) => streamed(pulled, [
+            for (var i = 0; i < 10; i++) List.filled(200, 1),
+          ]),
+          session: _session(),
+        );
+
+        await expectLater(
+          post(client),
+          throwsA(
+            isA<UnexpectedResponseException>().having(
+              (e) => e.statusCode,
+              'status',
+              200,
+            ),
+          ),
+        );
+        expect(pulled.length, lessThan(10));
+        expect(
+          pulled.fold<int>(0, (a, b) => a + b),
+          lessThanOrEqualTo(maxBytes),
+        );
+      },
+    );
+
+    test('an undeclared body over the cap is rejected while reading', () async {
+      final (:client, sent: _, store: _, :pulled) = binarySetUp(
+        (pulled) => streamed(pulled, [
+          for (var i = 0; i < 10; i++) List.filled(400, 1),
+        ], declareLength: false),
+        session: _session(),
+      );
+
+      await expectLater(
+        post(client),
+        throwsA(isA<UnexpectedResponseException>()),
+      );
+      expect(pulled, hasLength(3)); // 1200 > 1000: reading stopped there
+    });
+
+    group('error bodies', () {
+      test(
+        'a small JSON error keeps the shared status/detail mapping',
+        () async {
+          final cases = <int, Matcher>{
+            401: isA<UnauthorizedException>(),
+            413: isA<UnexpectedResponseException>().having(
+              (e) => e.statusCode,
+              's',
+              413,
+            ),
+            415: isA<UnexpectedResponseException>().having(
+              (e) => e.statusCode,
+              's',
+              415,
+            ),
+            422: isA<ValidationException>().having(
+              (e) => e.message,
+              'detail',
+              'Nope',
+            ),
+            429: isA<UnexpectedResponseException>().having(
+              (e) => e.statusCode,
+              's',
+              429,
+            ),
+            503: isA<ServerException>().having(
+              (e) => e.detail,
+              'detail',
+              'Nope',
+            ),
+            504: isA<ServerException>().having((e) => e.statusCode, 's', 504),
+          };
+          for (final MapEntry(key: status, value: matcher) in cases.entries) {
+            final (:client, sent: _, store: _, pulled: _) = binarySetUp(
+              (pulled) => streamed(
+                pulled,
+                [utf8.encode('{"detail": "Nope"}')],
+                status: status,
+                headers: const {'content-type': 'application/json'},
+              ),
+              session: _session(),
+            );
+            await expectLater(
+              post(client),
+              throwsA(matcher),
+              reason: '$status',
+            );
+          }
+        },
+      );
+
+      test(
+        'an error body over 64 KiB is bounded and becomes status-only',
+        () async {
+          final big = utf8.encode('{"detail": "${'x' * 70000}"}');
+          final (:client, sent: _, store: _, :pulled) = binarySetUp(
+            (pulled) => streamed(
+              pulled,
+              [
+                for (var i = 0; i < big.length; i += 8192)
+                  big.sublist(i, (i + 8192).clamp(0, big.length)),
+              ],
+              status: 503,
+              declareLength: false,
+            ),
+            session: _session(),
+          );
+
+          try {
+            await post(client);
+            fail('expected ServerException');
+          } on ServerException catch (error) {
+            expect(error.statusCode, 503);
+            expect(error.detail, isNull);
+            expect(error.toString(), isNot(contains('xxxx')));
+          }
+          expect(
+            pulled.fold<int>(0, (a, b) => a + b),
+            lessThan(64 * 1024 + 8192 + 1),
+          );
+        },
+      );
+
+      test('a non-JSON error body becomes status-only', () async {
+        final (:client, sent: _, store: _, pulled: _) = binarySetUp(
+          (pulled) => streamed(pulled, [
+            utf8.encode('<html>Traceback: token=$_token</html>'),
+          ], status: 422),
+          session: _session(),
+        );
+
+        try {
+          await post(client);
+          fail('expected ValidationException');
+        } on ValidationException catch (error) {
+          expect(error.message, 'Invalid request');
+          expect(error.toString(), isNot(contains('Traceback')));
+          expect(error.toString(), isNot(contains(_token)));
+        }
+      });
+
+      test('a 2xx other than 200 is unexpected', () async {
+        final (:client, sent: _, store: _, pulled: _) = binarySetUp(
+          (pulled) => streamed(pulled, [audio], status: 201),
+          session: _session(),
+        );
+
+        await expectLater(
+          post(client),
+          throwsA(
+            isA<UnexpectedResponseException>().having(
+              (e) => e.statusCode,
+              's',
+              201,
+            ),
+          ),
+        );
+      });
+    });
+
+    test('ClientException -> NetworkException without the URL', () async {
+      final store = InMemoryTokenStore(_session());
+      final client = ApiClient(
+        baseUrl: Uri.parse('https://internal-host.example'),
+        httpClient: MockClient.streaming(
+          (request, _) => throw http.ClientException('refused', request.url),
+        ),
+        tokenStore: store,
+      );
+
+      try {
+        await post(client);
+        fail('expected NetworkException');
+      } on NetworkException catch (error) {
+        expect(error.isTimeout, isFalse);
+        expect(error.toString(), isNot(contains('internal-host.example')));
+      }
+    });
+
+    testWidgets('the per-request timeout applies (fake clock)', (tester) async {
+      final never = Completer<http.StreamedResponse>();
+      final client = ApiClient(
+        baseUrl: _base,
+        httpClient: MockClient.streaming((_, _) => never.future),
+        tokenStore: InMemoryTokenStore(_session()),
+      );
+
+      Object? error;
+      unawaited(
+        client
+            .postBinary(
+              '/api/voice/respond',
+              body: payload,
+              contentType: 'audio/wav',
+              accept: 'audio/mpeg',
+              maxResponseBytes: maxBytes,
+              authenticated: true,
+              timeout: const Duration(seconds: 100),
+            )
+            .then<void>((_) {}, onError: (Object e) => error = e),
+      );
+
+      await tester.pump(const Duration(seconds: 99));
+      expect(error, isNull); // past the 15 s default, still waiting
+      await tester.pump(const Duration(seconds: 2));
+      expect(
+        error,
+        isA<NetworkException>().having((e) => e.isTimeout, 'timeout', true),
+      );
+    });
+
+    test(
+      'no exception or response string contains the token or body',
+      () async {
+        final (:client, sent: _, store: _, pulled: _) = binarySetUp(
+          (pulled) => streamed(pulled, [audio]),
+          session: _session(),
+        );
+
+        final response = await post(client);
+
+        expect(response.toString(), 'BinaryResponse(<hidden>)');
+        for (final status in [401, 413, 422, 500, 503]) {
+          final (client: failing, sent: _, store: _, pulled: _) = binarySetUp(
+            (pulled) => streamed(pulled, [
+              utf8.encode('{"detail": "Generic"}'),
+            ], status: status),
+            session: _session(),
+          );
+          try {
+            await post(failing);
+            fail('expected ApiException');
+          } on ApiException catch (error) {
+            expect(
+              error.toString(),
+              isNot(contains(_token)),
+              reason: '$status',
+            );
+            expect(
+              error.toString(),
+              isNot(contains('Bearer')),
+              reason: '$status',
+            );
+          }
+        }
+      },
+    );
   });
 }
