@@ -77,31 +77,144 @@ void main() {
     }
   });
 
-  test('no build type declares microphone or audio permissions', () {
-    for (final buildType in ['main', 'debug', 'profile']) {
-      final manifest = _read('$buildType/AndroidManifest.xml');
-      expect(manifest, isNot(contains('RECORD_AUDIO')), reason: buildType);
+  test('the main manifest requests exactly INTERNET and RECORD_AUDIO', () {
+    expect(_permissions(_read('main/AndroidManifest.xml')), {
+      'android.permission.INTERNET',
+      'android.permission.RECORD_AUDIO',
+    });
+  });
+
+  test('debug and profile manifests add nothing beyond INTERNET', () {
+    // Flutter's template repeats INTERNET there for development tooling.
+    for (final buildType in ['debug', 'profile']) {
       expect(
-        manifest,
-        isNot(contains('MODIFY_AUDIO_SETTINGS')),
+        _permissions(_read('$buildType/AndroidManifest.xml')),
+        everyElement('android.permission.INTERNET'),
         reason: buildType,
       );
     }
   });
 
-  test('no microphone, audio or speech package is a dependency', () {
-    // Sprint 01 voice is visual only. This is not an allow-list: other packages
-    // may be added freely; only audio-capture/speech packages are flagged.
+  test('no background, foreground-service or assistant microphone use', () {
+    for (final buildType in ['main', 'debug', 'profile']) {
+      final manifest = _read('$buildType/AndroidManifest.xml');
+      for (final forbidden in _forbiddenManifestTerms) {
+        expect(
+          manifest,
+          isNot(contains(forbidden)),
+          reason: '$buildType: $forbidden',
+        );
+      }
+    }
+  });
+
+  test('the merged debug manifest adds only RECORD_AUDIO for audio', () {
+    final merged = _mergedDebugManifest();
+    if (merged == null) {
+      markTestSkipped('No debug build output: run flutter build apk --debug.');
+      return;
+    }
+    expect(_permissions(merged), {
+      'android.permission.INTERNET',
+      'android.permission.RECORD_AUDIO',
+      // Added by androidx.core for dynamically registered receivers.
+      'io.github.martiriverogarcia.jarvis.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION',
+    });
+    expect(_components(merged), {
+      'activity io.github.martiriverogarcia.jarvis.MainActivity',
+      'provider androidx.startup.InitializationProvider',
+      'receiver androidx.profileinstaller.ProfileInstallReceiver',
+    });
+    for (final forbidden in _forbiddenManifestTerms) {
+      expect(merged, isNot(contains(forbidden)), reason: forbidden);
+    }
+  });
+
+  test('audio packages are exactly record and audioplayers', () {
     final pubspec = File('pubspec.yaml').readAsStringSync();
-    final packages = RegExp(
-      r'^  ([a-z0-9_]+):',
-      multiLine: true,
-    ).allMatches(pubspec).map((m) => m.group(1)!).toSet();
+    final dependencies = _section(pubspec, 'dependencies');
+    final devDependencies = _section(pubspec, 'dev_dependencies');
     final audioRelated = RegExp(
-      r'audio|record|speech|microphone|sound|_stt|_tts|^stt|^tts|vosk|whisper',
+      r'audio|record|speech|microphone|sound|voice|tts|stt',
     );
 
-    expect(packages.where(audioRelated.hasMatch), isEmpty);
-    expect(packages, contains('flutter')); // the parser found the section
+    expect(dependencies.where(audioRelated.hasMatch).toSet(), {
+      'record',
+      'audioplayers',
+    });
+    // Test-only: fakes of the two plugins' platform interfaces.
+    expect(devDependencies.where(audioRelated.hasMatch).toSet(), {
+      'record_platform_interface',
+      'audioplayers_platform_interface',
+    });
+    expect(dependencies, contains('flutter')); // the parser found the section
   });
+
+  test('no speech, cloud speech or AI SDK is a dependency', () {
+    final pubspec = File('pubspec.yaml').readAsStringSync();
+    final packages = {
+      ..._section(pubspec, 'dependencies'),
+      ..._section(pubspec, 'dev_dependencies'),
+    };
+    final forbidden = RegExp(
+      r'speech_to_text|flutter_tts|text_to_speech|azure|microsoft|cognitive|'
+      r'openai|whisper|vosk|deepgram|google_speech|google_cloud|firebase_ml|'
+      r'foundry|assistant',
+    );
+
+    expect(packages.where(forbidden.hasMatch), isEmpty);
+  });
+}
+
+const _forbiddenManifestTerms = [
+  'FOREGROUND_SERVICE',
+  'RECORD_BACKGROUND_AUDIO',
+  'CAPTURE_AUDIO_OUTPUT',
+  'CAPTURE_AUDIO_HOTWORD',
+  'MODIFY_AUDIO_SETTINGS',
+  'BIND_VOICE_INTERACTION',
+  'android.service.voice',
+  'VoiceInteractionService',
+  'RecognitionService',
+  'android.intent.action.ASSIST',
+  'android.intent.action.VOICE_COMMAND',
+  'android.speech',
+];
+
+Set<String> _permissions(String manifest) =>
+    RegExp(r'<uses-permission[^>]*android:name="([^"]+)"')
+        .allMatches(manifest)
+        .map((m) => m.group(1)!)
+        .toSet();
+
+Set<String> _components(String manifest) => RegExp(
+  r'<(activity|service|receiver|provider)\b[^>]*?android:name="([^"]+)"',
+  dotAll: true,
+).allMatches(manifest).map((m) => '${m.group(1)} ${m.group(2)}').toSet();
+
+String? _mergedDebugManifest() {
+  final root = Directory('build/app/intermediates/merged_manifest/debug');
+  if (!root.existsSync()) {
+    return null;
+  }
+  final manifests = root
+      .listSync(recursive: true)
+      .whereType<File>()
+      .where((file) => file.path.endsWith('AndroidManifest.xml'));
+  return manifests.isEmpty ? null : manifests.first.readAsStringSync();
+}
+
+/// Package names declared directly under a top-level pubspec [section].
+Set<String> _section(String pubspec, String section) {
+  final match = RegExp(
+    '^$section:\\n((?:(?:  .*)?\\n)*)',
+    multiLine: true,
+  ).firstMatch(pubspec);
+  if (match == null) {
+    return const {};
+  }
+  return RegExp(
+    r'^  ([a-z0-9_]+):',
+    multiLine: true,
+  ).allMatches(match.group(1)!).map((m) => m.group(1)!).toSet();
 }

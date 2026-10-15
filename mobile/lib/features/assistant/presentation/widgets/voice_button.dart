@@ -3,30 +3,52 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-/// The app's main interaction point: a large circular microphone button.
+/// What the voice button shows. Presentation only: the caller decides it from
+/// the conversation state.
+enum VoiceButtonVisual { idle, listening, thinking, speaking }
+
+/// The app's main interaction point: a large circular push-to-talk button.
 ///
-/// Sprint 01 only has the idle look and press feedback. The visuals are split
-/// into a pulse ring, the core circle and the icon so later voice states
-/// (listening, processing, responding) can restyle those layers.
+/// A trigger and a renderer only. It reports presses and activations and
+/// draws [visual]; it knows nothing about recording, requests or playback.
+///
+/// Touch is push-to-talk: [onPressStart] on pointer down, [onPressEnd] on
+/// release, [onPressCancel] if the system cancels the pointer. Only the first
+/// pointer counts. Accessibility services and keyboards use [onActivate]
+/// instead, so no hold is needed. With neither [onPressStart] nor
+/// [onActivate], the button is disabled.
 class VoiceButton extends StatefulWidget {
   const VoiceButton({
     super.key,
-    required this.onPressed,
+    required this.visual,
     required this.semanticLabel,
+    this.semanticValue,
     this.semanticHint,
+    this.onPressStart,
+    this.onPressEnd,
+    this.onPressCancel,
+    this.onActivate,
     this.size = 168,
   });
 
-  /// Null disables the button.
-  final VoidCallback? onPressed;
+  final VoiceButtonVisual visual;
   final String semanticLabel;
+  final String? semanticValue;
   final String? semanticHint;
+
+  final VoidCallback? onPressStart;
+  final VoidCallback? onPressEnd;
+  final VoidCallback? onPressCancel;
+
+  /// The semantic tap and keyboard activation.
+  final VoidCallback? onActivate;
 
   /// Diameter of the button; reduced on very narrow screens.
   final double size;
 
   static const pressedScale = 0.94;
   static const pulseDuration = Duration(milliseconds: 2400);
+  static const listeningPulseDuration = Duration(milliseconds: 900);
 
   @override
   State<VoiceButton> createState() => _VoiceButtonState();
@@ -50,19 +72,41 @@ class _VoiceButtonState extends State<VoiceButton>
     begin: 0.35,
     end: 0,
   ).animate(_pulseCurve);
-  bool _pressed = false;
+
+  /// The pointer whose release ends the press. Gesture bookkeeping only.
+  int? _pointer;
   bool _reduceMotion = false;
+  bool _focused = false;
+
+  bool get _enabled => widget.onPressStart != null || widget.onActivate != null;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     _reduceMotion = MediaQuery.disableAnimationsOf(context);
-    if (_reduceMotion) {
+    _syncPulse();
+  }
+
+  @override
+  void didUpdateWidget(VoiceButton oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.visual != widget.visual) {
+      _syncPulse();
+    }
+  }
+
+  void _syncPulse() {
+    final duration = widget.visual == VoiceButtonVisual.listening
+        ? VoiceButton.listeningPulseDuration
+        : VoiceButton.pulseDuration;
+    if (_reduceMotion || widget.visual == VoiceButtonVisual.thinking) {
       _pulse
         ..stop()
         ..value = 0;
-    } else if (!_pulse.isAnimating) {
-      _pulse.repeat();
+    } else if (!_pulse.isAnimating || _pulse.duration != duration) {
+      _pulse
+        ..duration = duration
+        ..repeat();
     }
   }
 
@@ -73,15 +117,50 @@ class _VoiceButtonState extends State<VoiceButton>
     super.dispose();
   }
 
-  void _handleTap() {
+  void _handleDown(PointerDownEvent event) {
+    final onPressStart = widget.onPressStart;
+    if (_pointer != null || onPressStart == null) {
+      return;
+    }
+    setState(() => _pointer = event.pointer);
     HapticFeedback.lightImpact();
-    widget.onPressed?.call();
+    onPressStart();
+  }
+
+  void _handleUp(PointerUpEvent event) {
+    if (_endPress(event.pointer)) {
+      widget.onPressEnd?.call();
+    }
+  }
+
+  void _handleCancel(PointerCancelEvent event) {
+    if (_endPress(event.pointer)) {
+      widget.onPressCancel?.call();
+    }
+  }
+
+  bool _endPress(int pointer) {
+    if (pointer != _pointer) {
+      return false;
+    }
+    setState(() => _pointer = null);
+    return true;
+  }
+
+  void _handleActivate() {
+    final onActivate = widget.onActivate;
+    if (onActivate == null) {
+      return;
+    }
+    HapticFeedback.lightImpact();
+    onActivate();
   }
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final enabled = widget.onPressed != null;
+    final enabled = _enabled;
+    final activate = widget.onActivate == null ? null : _handleActivate;
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -90,46 +169,91 @@ class _VoiceButtonState extends State<VoiceButton>
           button: true,
           enabled: enabled,
           label: widget.semanticLabel,
+          value: widget.semanticValue,
           hint: widget.semanticHint,
+          // The focus node's own semantics are excluded below.
+          focusable: activate != null,
+          focused: _focused,
           excludeSemantics: true,
-          onTap: enabled ? _handleTap : null,
-          child: SizedBox.square(
-            // Room for the pulse ring around the button.
-            dimension: size * 1.3,
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                _PulseRing(
-                  scale: _ringScale,
-                  opacity: _ringOpacity,
-                  size: size,
-                  color: colors.primary,
+          onTap: activate,
+          child: FocusableActionDetector(
+            enabled: activate != null,
+            actions: {
+              ActivateIntent: CallbackAction<ActivateIntent>(
+                onInvoke: (_) => activate?.call(),
+              ),
+            },
+            onFocusChange: (focused) => setState(() => _focused = focused),
+            child: Listener(
+              onPointerDown: _handleDown,
+              onPointerUp: _handleUp,
+              onPointerCancel: _handleCancel,
+              child: SizedBox.square(
+                // Room for the pulse ring around the button.
+                dimension: size * 1.3,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    if (widget.visual != VoiceButtonVisual.thinking)
+                      _PulseRing(
+                        scale: _ringScale,
+                        opacity: _ringOpacity,
+                        size: size,
+                        color: _coreColor(colors, enabled),
+                      )
+                    else if (!_reduceMotion)
+                      SizedBox.square(
+                        key: const Key('voice-button-progress'),
+                        dimension: size * 1.12,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 3,
+                          color: colors.primary,
+                        ),
+                      ),
+                    AnimatedScale(
+                      scale: _pointer != null ? VoiceButton.pressedScale : 1,
+                      duration: _reduceMotion
+                          ? Duration.zero
+                          : const Duration(milliseconds: 120),
+                      curve: Curves.easeOut,
+                      child: _Core(
+                        size: size,
+                        base: _coreColor(colors, enabled),
+                        icon: _icon,
+                        iconColor: enabled
+                            ? colors.onPrimary
+                            : colors.onSurfaceVariant,
+                        glow: enabled ? colors.primary : null,
+                        focusColor: _focused ? colors.onSurface : null,
+                      ),
+                    ),
+                  ],
                 ),
-                AnimatedScale(
-                  scale: _pressed ? VoiceButton.pressedScale : 1,
-                  duration: _reduceMotion
-                      ? Duration.zero
-                      : const Duration(milliseconds: 120),
-                  curve: Curves.easeOut,
-                  child: _Core(
-                    size: size,
-                    colors: colors,
-                    enabled: enabled,
-                    onTap: enabled ? _handleTap : null,
-                    onHighlightChanged: (pressed) =>
-                        setState(() => _pressed = pressed),
-                  ),
-                ),
-              ],
+              ),
             ),
           ),
         );
       },
     );
   }
+
+  Color _coreColor(ColorScheme colors, bool enabled) {
+    if (!enabled) {
+      return colors.surfaceContainerHighest;
+    }
+    return widget.visual == VoiceButtonVisual.listening
+        ? colors.tertiary
+        : colors.primary;
+  }
+
+  IconData get _icon => switch (widget.visual) {
+    VoiceButtonVisual.idle || VoiceButtonVisual.listening => Icons.mic_rounded,
+    VoiceButtonVisual.thinking => Icons.more_horiz_rounded,
+    VoiceButtonVisual.speaking => Icons.graphic_eq_rounded,
+  };
 }
 
-/// Soft ring that grows and fades behind the button while idle.
+/// Soft ring that grows and fades behind the button.
 class _PulseRing extends StatelessWidget {
   const _PulseRing({
     required this.scale,
@@ -166,53 +290,48 @@ class _PulseRing extends StatelessWidget {
 class _Core extends StatelessWidget {
   const _Core({
     required this.size,
-    required this.colors,
-    required this.enabled,
-    required this.onTap,
-    required this.onHighlightChanged,
+    required this.base,
+    required this.icon,
+    required this.iconColor,
+    required this.glow,
+    required this.focusColor,
   });
 
   final double size;
-  final ColorScheme colors;
-  final bool enabled;
-  final VoidCallback? onTap;
-  final ValueChanged<bool> onHighlightChanged;
+  final Color base;
+  final IconData icon;
+  final Color iconColor;
+  final Color? glow;
+  final Color? focusColor;
 
   @override
   Widget build(BuildContext context) {
-    final base = enabled ? colors.primary : colors.surfaceContainerHighest;
     return DecoratedBox(
+      key: const Key('voice-button'),
       decoration: BoxDecoration(
         shape: BoxShape.circle,
         gradient: RadialGradient(
           colors: [base, Color.lerp(base, Colors.black, 0.25)!],
         ),
+        border: focusColor == null
+            ? null
+            : Border.all(color: focusColor!, width: 3),
         boxShadow: [
-          if (enabled)
+          if (glow case final glow?)
             BoxShadow(
-              color: colors.primary.withValues(alpha: 0.3),
+              color: glow.withValues(alpha: 0.3),
               blurRadius: 32,
               spreadRadius: 2,
             ),
         ],
       ),
-      child: Material(
-        type: MaterialType.transparency,
-        shape: const CircleBorder(),
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          key: const Key('voice-button'),
-          customBorder: const CircleBorder(),
-          onTap: onTap,
-          onHighlightChanged: onHighlightChanged,
-          child: SizedBox.square(
-            dimension: size,
-            child: Icon(
-              Icons.mic_rounded,
-              size: size * 0.38,
-              color: enabled ? colors.onPrimary : colors.onSurfaceVariant,
-            ),
-          ),
+      child: SizedBox.square(
+        dimension: size,
+        child: Icon(
+          icon,
+          key: const Key('voice-button-icon'),
+          size: size * 0.38,
+          color: iconColor,
         ),
       ),
     );

@@ -218,4 +218,127 @@ void main() {
       expect(find.byKey(const Key('settings-screen')), findsNothing);
     });
   });
+
+  group('developer tools route', () {
+    const dev = Routes.developerTextAssistant;
+
+    test('authenticated: allowed only with developer tools', () {
+      final state = AuthAuthenticated(testUser);
+
+      expect(authRedirect(state, dev, developerTools: true), isNull);
+      expect(authRedirect(state, dev, developerTools: false), Routes.home);
+      expect(authRedirect(state, dev), Routes.home);
+    });
+
+    test('other states redirect as before, with or without the flag', () {
+      for (final developerTools in [true, false]) {
+        expect(
+          authRedirect(
+            const AuthUnauthenticated(),
+            dev,
+            developerTools: developerTools,
+          ),
+          Routes.login,
+        );
+        for (final state in [_states[0], _states[3], _states[4]]) {
+          expect(
+            authRedirect(state, dev, developerTools: developerTools),
+            Routes.splash,
+          );
+        }
+      }
+    });
+
+    test('the flag changes nothing for the other paths', () {
+      for (final state in _states) {
+        for (final path in _paths) {
+          expect(
+            authRedirect(state, path, developerTools: true),
+            authRedirect(state, path),
+            reason: '$state $path',
+          );
+        }
+      }
+    });
+
+    test('no redirect loops with developer tools enabled', () {
+      for (final state in _states) {
+        for (final path in [..._paths, dev]) {
+          final target = authRedirect(state, path, developerTools: true);
+          if (target != null) {
+            expect(
+              authRedirect(state, target, developerTools: true),
+              isNull,
+              reason: '$state $path',
+            );
+          }
+        }
+      }
+    });
+
+    for (final developerTools in [true, false]) {
+      testWidgets('direct navigation with developer tools '
+          '${developerTools ? 'enabled opens' : 'disabled goes home'}', (
+        tester,
+      ) async {
+        final container = await pumpJarvis(
+          tester,
+          api: FakeAuthApi(),
+          store: InMemoryTokenStore(testSession()),
+          developerTools: developerTools,
+        );
+        await tester.pumpAndSettle();
+
+        container.read(routerProvider).go(dev);
+        await tester.pumpAndSettle();
+
+        final screen = find.byKey(const Key('developer-text-assistant-screen'));
+        expect(screen, developerTools ? findsOneWidget : findsNothing);
+        expect(
+          find.byKey(const Key('assistant-home')),
+          developerTools ? findsNothing : findsOneWidget,
+        );
+      });
+    }
+
+    for (final developerTools in [true, false]) {
+      testWidgets(
+        'the route is registered only with developer tools ($developerTools)',
+        (tester) async {
+          final container = await pumpJarvis(
+            tester,
+            api: FakeAuthApi(),
+            store: InMemoryTokenStore(testSession()),
+            developerTools: developerTools,
+          );
+          await tester.pumpAndSettle();
+
+          final paths = [
+            for (final route
+                in container.read(routerProvider).configuration.routes)
+              if (route is GoRoute) route.path,
+          ];
+          expect(paths.contains(dev), developerTools);
+          expect(paths, containsAll([Routes.home, Routes.settings]));
+        },
+      );
+    }
+
+    testWidgets('signed out, the developer route goes to login', (
+      tester,
+    ) async {
+      final container = await pumpJarvis(
+        tester,
+        api: FakeAuthApi(),
+        store: InMemoryTokenStore(),
+        developerTools: true,
+      );
+      await tester.pumpAndSettle();
+
+      container.read(routerProvider).go(dev);
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('login-email')), findsOneWidget);
+    });
+  });
 }

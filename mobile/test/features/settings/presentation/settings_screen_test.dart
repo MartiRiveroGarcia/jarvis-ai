@@ -12,10 +12,16 @@ import '../../../support/test_app.dart';
 Future<(FakeAuthApi, InMemoryTokenStore)> _openSettings(
   WidgetTester tester, {
   FakeAuthApi? api,
+  bool? developerTools,
 }) async {
   final fake = api ?? FakeAuthApi();
   final store = InMemoryTokenStore(testSession());
-  await pumpJarvis(tester, api: fake, store: store);
+  await pumpJarvis(
+    tester,
+    api: fake,
+    store: store,
+    developerTools: developerTools,
+  );
   await tester.pumpAndSettle();
   await tester.tap(find.byKey(const Key('home-settings')));
   await tester.pumpAndSettle();
@@ -139,5 +145,43 @@ void main() {
     expect(find.byKey(const Key('sign-out-failed')), findsOneWidget);
     expect(find.byKey(const Key('settings-screen')), findsNothing);
     expect(store.session, isNotNull);
+  });
+
+  group('developer section', () {
+    final tile = find.byKey(const Key('developer-text-assistant'));
+
+    testWidgets('shown when developer tools are enabled', (tester) async {
+      await _openSettings(tester, developerTools: true);
+
+      expect(find.text('Developer'), findsOneWidget);
+      expect(find.text('Developer: ask Jarvis by text'), findsOneWidget);
+      expect(tile, findsOneWidget);
+    });
+
+    testWidgets('hidden when developer tools are disabled', (tester) async {
+      await _openSettings(tester, developerTools: false);
+
+      expect(find.text('Developer'), findsNothing);
+      expect(tile, findsNothing);
+      // The rest of Settings is unchanged.
+      expect(find.byKey(const Key('sign-out')), findsOneWidget);
+    });
+
+    testWidgets('the tile opens the text assistant; Back returns here', (
+      tester,
+    ) async {
+      await _openSettings(tester, developerTools: true);
+
+      await tester.tap(tile);
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const Key('developer-text-assistant-screen')),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.byType(BackButton));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('settings-screen')), findsOneWidget);
+    });
   });
 }

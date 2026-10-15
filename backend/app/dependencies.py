@@ -1,5 +1,6 @@
 """Shared FastAPI dependencies."""
 
+from functools import lru_cache
 from typing import Annotated
 
 from fastapi import Depends
@@ -8,10 +9,14 @@ from sqlalchemy.orm import Session
 
 from app.config.settings import Settings, get_settings
 from app.database.session import get_db
+from app.integrations.foundry import FoundryResponsesClient
+from app.integrations.speech import AzureSpeechClient
 from app.models.user import User
 from app.security.session_tokens import is_well_formed_session_token
+from app.services.assistant_service import AssistantService
 from app.services.auth_errors import InvalidSessionError
 from app.services.auth_service import AuthService
+from app.services.voice_assistant_service import VoiceAssistantService
 
 # auto_error=False: every failure is turned into the same generic 401 by our handler.
 bearer_scheme = HTTPBearer(
@@ -52,3 +57,39 @@ def get_current_user(
     if token is None:
         raise InvalidSessionError
     return auth_service.authenticate(token)
+
+
+@lru_cache
+def get_foundry_client() -> FoundryResponsesClient:
+    """Return the process-wide Foundry client, created on the first assistant request.
+
+    Construction only stores configuration; the Entra ID credential and the SDK client
+    are created inside the client on its first call, then reused. Raises
+    FoundryNotConfiguredError (never cached) when Foundry is not configured.
+    """
+    return FoundryResponsesClient.from_settings(get_settings())
+
+
+def get_assistant_service() -> AssistantService:
+    # The provider is only called inside AssistantService.respond(), so neither app
+    # startup nor any other endpoint touches Foundry.
+    return AssistantService(generator_provider=get_foundry_client)
+
+
+@lru_cache
+def get_speech_client() -> AzureSpeechClient:
+    """Return the process-wide Azure Speech client, created on the first voice request.
+
+    Construction only stores configuration; the Entra ID credential and the native
+    SDK load on its first call. One client serves speech-to-text and text-to-speech
+    and is safe to share between requests. Raises SpeechNotConfiguredError (never
+    cached) when Speech is not configured.
+    """
+    return AzureSpeechClient.from_settings(get_settings())
+
+
+def get_voice_assistant_service() -> VoiceAssistantService:
+    # The Speech provider is only called inside VoiceAssistantService.respond().
+    return VoiceAssistantService(
+        speech_provider=get_speech_client, assistant_service=get_assistant_service()
+    )
