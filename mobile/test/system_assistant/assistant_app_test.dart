@@ -193,6 +193,110 @@ void main() {
     });
   });
 
+  group('bottom panel presentation', () {
+    testWidgets('nothing opaque is painted outside the panel', (tester) async {
+      await _pump(tester);
+
+      final scaffold = tester.widget<Scaffold>(_key('assistant-surface'));
+      expect(scaffold.backgroundColor, Colors.transparent);
+      final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
+      expect(app.theme!.scaffoldBackgroundColor, Colors.transparent);
+      // The only Material surfaces are the transparent scaffold and the panel.
+      final opaque = tester
+          .widgetList<Material>(find.byType(Material))
+          .where((m) => m.type != MaterialType.transparency)
+          .where((m) => (m.color ?? Colors.transparent).a > 0)
+          .map((m) => m.key);
+      expect(opaque.toSet(), {const Key('assistant-panel')});
+    });
+
+    for (final (name, store) in [
+      ('authenticated', InMemoryTokenStore(testSession())),
+      ('signed out', InMemoryTokenStore()),
+    ]) {
+      testWidgets('the panel is compact and at the bottom when $name', (
+        tester,
+      ) async {
+        await _pump(tester, store: store);
+        final screen = tester.getSize(_key('assistant-surface'));
+        final panel = tester.getRect(_key('assistant-panel'));
+
+        expect(panel.bottom, screen.height);
+        expect(panel.height, lessThan(screen.height / 2));
+        expect(panel.top, greaterThan(0));
+      });
+    }
+
+    testWidgets('a tap outside the panel ends the session', (tester) async {
+      final h = await _pump(tester);
+
+      await tester.tapAt(const Offset(20, 20));
+      await tester.pump();
+
+      expect(h.closes, ['close']);
+    });
+
+    testWidgets('a tap inside the panel does not', (tester) async {
+      final h = await _pump(tester);
+
+      await tester.tap(find.text('Jarvis'));
+      await tester.pump();
+
+      expect(h.closes, isEmpty);
+    });
+
+    testWidgets(
+      'holding and double-tapping the disabled control keep it open',
+      (tester) async {
+        final h = await _pump(tester);
+        final control = tester.getCenter(find.byKey(const Key('voice-button')));
+
+        final hold = await tester.startGesture(control);
+        await tester.pump(const Duration(seconds: 2));
+        await hold.up();
+        await tester.pump();
+        await tester.tapAt(control);
+        await tester.pump(const Duration(milliseconds: 80));
+        await tester.tapAt(control);
+        await tester.pump(const Duration(milliseconds: 500));
+
+        expect(h.closes, isEmpty);
+        expect(_key('assistant-voice'), findsOneWidget);
+        expect(h.recorder.calls, isEmpty);
+        expect(h.voiceApi.requests, isEmpty);
+      },
+    );
+
+    testWidgets('taps on empty panel space keep it open', (tester) async {
+      final h = await _pump(tester);
+      final panel = tester.getRect(_key('assistant-panel'));
+      final voice = tester.getRect(find.byKey(const Key('voice-button')));
+
+      for (final point in [
+        panel.topLeft + const Offset(6, 6), // corner padding
+        panel.topRight + const Offset(-6, 6),
+        Offset(panel.left + 8, voice.center.dy), // beside the control
+        panel.bottomCenter + const Offset(0, -2), // below Close
+      ]) {
+        await tester.tapAt(point);
+        await tester.pump();
+      }
+
+      expect(h.closes, isEmpty);
+    });
+
+    testWidgets('the outside area is a labelled Close action', (tester) async {
+      final semantics = tester.ensureSemantics();
+      final h = await _pump(tester);
+
+      tester.semantics.tap(find.semantics.byLabel('Close Jarvis'));
+      await tester.pump();
+
+      expect(h.closes, ['close']);
+      semantics.dispose();
+    });
+  });
+
   group('Close', () {
     for (final (name, store) in [
       ('authenticated', InMemoryTokenStore(testSession())),

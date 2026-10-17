@@ -8,7 +8,8 @@ import '../features/auth/application/auth_state.dart';
 import '../features/auth/presentation/widgets/auth_error_banner.dart';
 import 'assistant_close.dart';
 
-/// The Android system-assistant app: one screen, chosen by the auth state.
+/// The Android system-assistant app: one compact bottom panel, chosen by the
+/// auth state, over a transparent window.
 ///
 /// It can be shown over the lock screen, so it contains no navigation, no
 /// account details and no account actions. Anything private stays in the
@@ -21,13 +22,17 @@ class AssistantApp extends StatelessWidget {
     return MaterialApp(
       title: 'Jarvis',
       debugShowCheckedModeBanner: false,
-      theme: buildJarvisTheme(),
+      // The Android window is transparent: nothing outside the panel is drawn.
+      theme: buildJarvisTheme().copyWith(
+        scaffoldBackgroundColor: Colors.transparent,
+      ),
       home: const AssistantGate(),
     );
   }
 }
 
-/// Shows the assistant only with a valid session, and a safe message otherwise.
+/// Shows the assistant only with a valid session, and a safe message otherwise,
+/// always inside the same compact panel at the bottom of the screen.
 class AssistantGate extends ConsumerWidget {
   const AssistantGate({super.key});
 
@@ -41,7 +46,7 @@ class AssistantGate extends ConsumerWidget {
 
     final content = switch (auth) {
       AuthInitializing() => const Padding(
-        padding: EdgeInsets.only(top: 32),
+        padding: EdgeInsets.symmetric(vertical: 24),
         child: Center(
           child: CircularProgressIndicator(key: Key('assistant-progress')),
         ),
@@ -60,18 +65,32 @@ class AssistantGate extends ConsumerWidget {
 
     return Scaffold(
       key: const Key('assistant-surface'),
-      body: SafeArea(
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
+      backgroundColor: Colors.transparent,
+      body: Stack(
+        children: [
+          // The transparent area around the panel: a tap there ends the
+          // session too. It never reaches the app or lock screen below.
+          Positioned.fill(
+            child: Semantics(
+              label: 'Close Jarvis',
+              button: true,
+              onTap: close,
+              excludeSemantics: true,
+              child: GestureDetector(
+                key: const Key('assistant-outside'),
+                behavior: HitTestBehavior.opaque,
+                onTap: close,
+              ),
+            ),
+          ),
+          Align(
+            alignment: Alignment.bottomCenter,
+            child: _Panel(
               children: [
-                const JarvisMark(),
-                const SizedBox(height: 24),
-                content,
+                const _Header(),
                 const SizedBox(height: 16),
+                content,
+                const SizedBox(height: 8),
                 TextButton(
                   key: const Key('assistant-close'),
                   onPressed: close,
@@ -80,8 +99,73 @@ class AssistantGate extends ConsumerWidget {
               ],
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The compact, top-rounded assistant panel.
+class _Panel extends StatelessWidget {
+  const _Panel({required this.children});
+
+  final List<Widget> children;
+
+  static const maxWidth = 600.0;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: maxWidth),
+      // Claims every touch inside the panel, including padding and empty
+      // space, so none falls through to the close area behind it. A Listener
+      // takes no part in gestures: the panel's own controls still work.
+      child: Listener(
+        key: const Key('assistant-panel-hit-area'),
+        behavior: HitTestBehavior.opaque,
+        child: _surface(colors),
+      ),
+    );
+  }
+
+  Widget _surface(ColorScheme colors) {
+    return Material(
+      key: const Key('assistant-panel'),
+      color: colors.surfaceContainerHigh,
+      elevation: 8,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 20, 24, 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: children,
+          ),
         ),
       ),
+    );
+  }
+}
+
+class _Header extends StatelessWidget {
+  const _Header();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Icon(Icons.graphic_eq_rounded, color: theme.colorScheme.primary),
+        const SizedBox(width: 8),
+        Text('Jarvis', style: theme.textTheme.titleLarge),
+      ],
     );
   }
 }
@@ -100,8 +184,9 @@ class _AssistantVoice extends StatelessWidget {
         const VoiceButton(
           visual: VoiceButtonVisual.idle,
           semanticLabel: 'Talk to Jarvis',
+          size: 104,
         ),
-        const SizedBox(height: 28),
+        const SizedBox(height: 12),
         Text(
           'Hold to talk',
           key: const Key('assistant-status'),

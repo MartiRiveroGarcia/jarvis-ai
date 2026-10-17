@@ -81,6 +81,34 @@ void main() {
     expect(graph.files.length, greaterThan(10));
   });
 
+  test('main.dart keeps the assistant entrypoint in the compiled program', () {
+    // Flutter compiles from lib/main.dart only; the export is what includes
+    // the assistant library. The dependency only points this way.
+    expect(
+      File('lib/main.dart').readAsStringSync(),
+      contains("export 'assistant_main.dart' show assistantMain;"),
+    );
+    expect(_reachable('lib/main.dart').files, contains(_entrypoint));
+    expect(graph.files, isNot(contains('lib/main.dart')));
+  });
+
+  test('a debug build contains the assistant entrypoint', () {
+    final kernel = File(
+      'build/app/intermediates/flutter/debug/flutter_assets/kernel_blob.bin',
+    );
+    if (!kernel.existsSync()) {
+      markTestSkipped('No debug build output: run flutter build apk --debug.');
+      return;
+    }
+    final bytes = String.fromCharCodes(kernel.readAsBytesSync());
+    expect(bytes, contains('package:jarvis/assistant_main.dart'));
+    expect(
+      bytes,
+      contains('package:jarvis/system_assistant/assistant_app.dart'),
+    );
+    expect(bytes, contains('assistantMain'));
+  });
+
   test('the walk would catch a forbidden import', () {
     // The normal entrypoint reaches the router, so the walk detects it.
     final normal = _reachable('lib/main.dart');
