@@ -13,11 +13,14 @@ the Dart code is kept portable so iOS can be added later (there is no iOS projec
 - Push-to-talk with Jarvis: hold the voice button, speak, release and hear the reply —
   see [Push-to-talk](#push-to-talk).
 - Settings: email, member-since date, app version and sign out.
+- Android system assistant: with Jarvis as the default digital assistant, long-press
+  Power opens a push-to-talk panel over the current app or the lock screen — see
+  [Android system assistant](#android-system-assistant).
 
 A temporary, debug-only screen also sends text to the Jarvis assistant and shows its
 reply — see [Developer text assistant](#developer-text-assistant-debug-only).
 
-**Not implemented yet:** AI agents and Android assistant integration.
+**Not implemented yet:** AI agents.
 
 ## Prerequisites
 
@@ -115,6 +118,48 @@ voice button on the home screen.
 Verified end to end on a physical Android device against the local FastAPI backend,
 Azure AI Speech and Microsoft Foundry.
 
+## Android system assistant
+
+Jarvis can be Android's default digital assistant. Choose it in Android Settings
+(Default apps → Digital assistant app); then long-pressing Power opens Jarvis, as the
+system assistant would.
+
+- A **compact bottom panel** appears over the current app or the lock screen, on a
+  translucent window. It contains only the push-to-talk button, its status and Close:
+  no navigation, settings or account details.
+- **Push-to-talk only:** nothing is recorded when the panel opens; hold the button to
+  talk, exactly as in the app.
+- **Microphone permission is never requested by the panel.** If it is missing, the
+  panel shows "Open Jarvis to allow microphone access"; grant it once through the
+  normal app.
+- **Signed out**, the panel shows "Sign in to Jarvis to use the assistant"; if the
+  backend can't be reached at startup, "Can't reach Jarvis" with Retry.
+- **Leaving** — Back, a tap outside the panel, Close or the screen turning off — ends
+  the session and cancels any recording, request or reply, as when the app leaves the
+  foreground.
+- **On a locked phone** the panel appears over the lock screen and voice works without
+  unlocking; closing it returns to the lock screen, still locked.
+
+How it works:
+
+- A dedicated native `AssistantActivity` handles `ACTION_ASSIST`, which makes Jarvis
+  eligible for `ROLE_ASSISTANT`. The launcher still opens the normal `MainActivity`.
+- It runs its own Flutter engine with a separate Dart entrypoint
+  (`lib/assistant_main.dart`). That entrypoint reaches none of the normal app's
+  router, screens or settings; a test checks its import graph. The voice controller
+  and push-to-talk widget are shared with the app.
+- The activity shows over the lock screen only for a valid assistant invocation (the
+  `ACTION_ASSIST` action while Jarvis holds the role). Any other launch ends at once.
+  The setting is cleared when the session ends.
+- There is deliberately no native ↔ Dart invocation channel in v0.3.0: nothing needs
+  one until a feature reacts to how or where Jarvis was invoked.
+
+Verified on a physical Pixel (Android 17): unlocked and truly locked voice exchanges,
+dismissal while listening, thinking and speaking by each way of leaving, revoked and
+restored microphone permission, and no change to the normal app. Android reports the
+panel as drawn about 1.1–1.5 s after the assistant starts from cold, and 0.8–0.95 s when
+Jarvis is already running.
+
 ## Developer text assistant (debug only)
 
 A **temporary** screen for testing the assistant by text before speech exists. It
@@ -193,10 +238,13 @@ and Microsoft Foundry deployment.
 - Assistant messages and replies are kept only in memory by the mobile developer
   screen and are not persisted by the app. Application logs do not record their
   content.
-- The only permission added for voice is `RECORD_AUDIO`, requested on first use.
+- The only permission added for voice is `RECORD_AUDIO`, requested on first use by
+  the app; the system assistant panel only checks it and never asks.
   Jarvis keeps recordings and spoken replies only for one exchange and never saves,
   logs or intentionally writes them to files (Android playback is in memory). Voice
-  activity stops when the app leaves the foreground.
+  activity stops when the app or the assistant panel leaves the foreground.
+- The assistant panel can be shown over the lock screen, so it shows no account
+  details and offers no account actions.
 - The app version shown in Settings comes from `pubspec.yaml` via the Flutter build
   (`FLUTTER_BUILD_NAME`); it is build metadata, not configuration.
 
