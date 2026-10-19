@@ -1,9 +1,9 @@
 """Azure AI Speech client: speech-to-text and text-to-speech.
 
-Each call is independent: its own recognizer or synthesizer and result state. Only
-the Microsoft Entra ID credential is shared, created on first use. There are no
-API keys, regions or manual tokens: the SDK requests and refreshes its own tokens
-from the credential for the resource's custom-domain endpoint.
+Each call is independent: its own recognizer or synthesizer, access token and result
+state. Only the Microsoft Entra ID credential is shared, created on first use. There
+are no API keys: each call requests a fresh token from the credential and connects
+to the regional endpoint with it, bound to the Speech resource ("aad#<id>#<token>").
 """
 
 import threading
@@ -44,6 +44,9 @@ STOP_GRACE_SECONDS = 2.0
 # Text-to-speech input limit, in Unicode code points after trimming.
 MAX_SYNTHESIS_TEXT_LENGTH = 5000
 
+# Microsoft Entra ID scope for Azure AI services, Speech included.
+ENTRA_SCOPE = "https://cognitiveservices.azure.com/.default"
+
 
 CredentialFactory = Callable[[], "TokenCredential"]
 
@@ -52,8 +55,8 @@ class OpenRecognition(Protocol):
     def __call__(
         self,
         *,
-        endpoint: str,
-        credential: "TokenCredential",
+        region: str,
+        authorization: str,
         languages: tuple[str, ...],
         pcm: bytes,
         sink: "RecognitionSink",
@@ -64,8 +67,8 @@ class OpenSynthesis(Protocol):
     def __call__(
         self,
         *,
-        endpoint: str,
-        credential: "TokenCredential",
+        region: str,
+        authorization: str,
         voice: str,
         text: str,
     ) -> "SynthesisSession": ...
@@ -81,7 +84,8 @@ class AzureSpeechClient:
     def __init__(
         self,
         *,
-        endpoint: str,
+        region: str,
+        resource_id: str,
         recognition_languages: tuple[str, ...],
         stt_timeout_seconds: float,
         voice: str,
@@ -90,7 +94,8 @@ class AzureSpeechClient:
         open_recognition: OpenRecognition | None = None,
         open_synthesis: OpenSynthesis | None = None,
     ) -> None:
-        self._endpoint = endpoint.rstrip("/")
+        self._region = region
+        self._resource_id = resource_id
         self._recognition_languages = tuple(recognition_languages)
         self._stt_timeout_seconds = stt_timeout_seconds
         self._voice = voice
@@ -103,10 +108,11 @@ class AzureSpeechClient:
 
     @classmethod
     def from_settings(cls, settings: "Settings") -> "AzureSpeechClient":
-        if settings.speech_endpoint is None:
+        if settings.speech_region is None or settings.speech_resource_id is None:
             raise SpeechNotConfiguredError
         return cls(
-            endpoint=settings.speech_endpoint,
+            region=settings.speech_region,
+            resource_id=settings.speech_resource_id,
             recognition_languages=settings.speech_recognition_languages,
             stt_timeout_seconds=settings.speech_stt_timeout_seconds,
             voice=settings.speech_voice,
@@ -114,7 +120,7 @@ class AzureSpeechClient:
         )
 
     def __repr__(self) -> str:
-        # Never expose the endpoint.
+        # Never expose the resource ID or a token.
         return f"{type(self).__name__}(credential_created={self._credential is not None})"
 
     def transcribe(self, wav: bytes) -> str:
@@ -124,14 +130,14 @@ class AzureSpeechClient:
         """
         audio = parse_wav(wav)  # before anything touches Azure
         deadline = time.monotonic() + self._stt_timeout_seconds
-        credential = self._get_credential()
+        authorization = self._authorization()
         open_recognition = self._recognition_opener()
 
         collector = _Collector()
         try:
             session = open_recognition(
-                endpoint=self._endpoint,
-                credential=credential,
+                region=self._region,
+                authorization=authorization,
                 languages=self._recognition_languages,
                 pcm=audio.pcm,
                 sink=collector,
@@ -156,13 +162,13 @@ class AzureSpeechClient:
         """
         clean_text = _validate_text(text)  # before anything touches Azure
         deadline = time.monotonic() + self._tts_timeout_seconds
-        credential = self._get_credential()
+        authorization = self._authorization()
         open_synthesis = self._synthesis_opener()
 
         try:
             session = open_synthesis(
-                endpoint=self._endpoint,
-                credential=credential,
+                region=self._region,
+                authorization=authorization,
                 voice=self._voice,
                 text=clean_text,
             )
@@ -174,6 +180,15 @@ class AzureSpeechClient:
         finally:
             _close_quietly(session)
         return _audio(outcome)
+
+    def _authorization(self) -> str:
+        """A fresh resource-bound token for one connection; never cached or logged."""
+        credential = self._get_credential()
+        try:
+            token = credential.get_token(ENTRA_SCOPE).token
+        except Exception:
+            raise SpeechUnavailableError(reason="credential") from None
+        return f"aad#{self._resource_id}#{token}"
 
     def _get_credential(self) -> "TokenCredential":
         if self._credential is None:
