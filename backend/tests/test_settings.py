@@ -302,13 +302,19 @@ def test_there_is_no_api_key_setting() -> None:
 
 # --- Azure AI Speech --------------------------------------------------------------
 
-SPEECH_ENDPOINT = "https://jarvis-speech-test.cognitiveservices.azure.com"
+SPEECH_REGION = "swedencentral"
+SPEECH_RESOURCE_ID = (
+    "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/jarvis-rg"
+    "/providers/Microsoft.CognitiveServices/accounts/jarvis-speech-test"
+)
+SPEECH = {"speech_region": SPEECH_REGION, "speech_resource_id": SPEECH_RESOURCE_ID}
 
 
 def test_speech_is_optional_and_off_by_default() -> None:
     settings = _foundry()
 
-    assert settings.speech_endpoint is None
+    assert settings.speech_region is None
+    assert settings.speech_resource_id is None
     assert settings.speech_configured is False
     assert settings.speech_recognition_languages == ("ca-ES", "es-ES", "en-US", "zh-CN")
     assert settings.speech_voice == "ca-ES-AlbaNeural"
@@ -317,7 +323,8 @@ def test_speech_is_optional_and_off_by_default() -> None:
 
 
 def test_speech_is_configured_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("JARVIS_SPEECH_ENDPOINT", SPEECH_ENDPOINT)
+    monkeypatch.setenv("JARVIS_SPEECH_REGION", " SwedenCentral ")
+    monkeypatch.setenv("JARVIS_SPEECH_RESOURCE_ID", f" {SPEECH_RESOURCE_ID} ")
     monkeypatch.setenv("JARVIS_SPEECH_RECOGNITION_LANGUAGES", '[" es-ES ", "en-US"]')
     monkeypatch.setenv("JARVIS_SPEECH_VOICE", " es-ES-ElviraNeural ")
     monkeypatch.setenv("JARVIS_SPEECH_STT_TIMEOUT_SECONDS", "30")
@@ -326,7 +333,8 @@ def test_speech_is_configured_from_the_environment(monkeypatch: pytest.MonkeyPat
     settings = Settings(_env_file=None)
 
     assert settings.speech_configured is True
-    assert settings.speech_endpoint == SPEECH_ENDPOINT
+    assert settings.speech_region == SPEECH_REGION
+    assert settings.speech_resource_id == SPEECH_RESOURCE_ID
     assert settings.speech_recognition_languages == ("es-ES", "en-US")
     assert settings.speech_voice == "es-ES-ElviraNeural"
     assert settings.speech_stt_timeout_seconds == 30
@@ -334,25 +342,25 @@ def test_speech_is_configured_from_the_environment(monkeypatch: pytest.MonkeyPat
 
 
 def test_speech_does_not_depend_on_foundry() -> None:
-    settings = _foundry(speech_endpoint=SPEECH_ENDPOINT)
+    settings = _foundry(**SPEECH)
 
     assert settings.speech_configured is True
     assert settings.foundry_configured is False
 
 
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [
-        (SPEECH_ENDPOINT, SPEECH_ENDPOINT),
-        (SPEECH_ENDPOINT + "/", SPEECH_ENDPOINT),
-        (f"  {SPEECH_ENDPOINT}/  ", SPEECH_ENDPOINT),
-        ("HTTPS://Jarvis-Speech-Test.CognitiveServices.Azure.com/", SPEECH_ENDPOINT),
-        ("https://jarvis-speech-test.cognitiveservices.azure.com:443", SPEECH_ENDPOINT),
-        ("https://a.cognitiveservices.azure.com", "https://a.cognitiveservices.azure.com"),
-    ],
-)
-def test_valid_speech_endpoints_are_normalized(raw: str, expected: str) -> None:
-    assert _foundry(speech_endpoint=raw).speech_endpoint == expected
+@pytest.mark.parametrize("missing", ["speech_region", "speech_resource_id"])
+def test_speech_region_and_resource_id_must_be_set_together(missing: str) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        _foundry(**{key: value for key, value in SPEECH.items() if key != missing})
+
+    message = str(exc_info.value)
+    assert "JARVIS_SPEECH_REGION and JARVIS_SPEECH_RESOURCE_ID must be set together" in message
+    assert "jarvis-speech-test" not in message
+
+
+@pytest.mark.parametrize("region", ["swedencentral", "westeurope", "eastus2", "uksouth"])
+def test_valid_speech_regions_are_accepted(region: str) -> None:
+    assert _foundry(**{**SPEECH, "speech_region": region}).speech_region == region
 
 
 @pytest.mark.parametrize(
@@ -360,69 +368,95 @@ def test_valid_speech_endpoints_are_normalized(raw: str, expected: str) -> None:
     [
         "",
         "   ",
-        "not a url",
-        "http://jarvis-speech-test.cognitiveservices.azure.com",
-        "jarvis-speech-test.cognitiveservices.azure.com",
-        "ftp://jarvis-speech-test.cognitiveservices.azure.com",
-        # Wrong hosts: regional endpoints, other Azure services, look-alikes.
+        "a",
+        "sweden central",
+        "sweden-central",
+        "2westeurope",
+        "swedencentral.stt.speech.microsoft.com",
         "https://swedencentral.api.cognitive.microsoft.com",
-        "https://swedencentral.stt.speech.microsoft.com",
-        "https://jarvis.openai.azure.com",
-        "https://jarvis.services.ai.azure.com",
-        "https://cognitiveservices.azure.com",
-        "https://a.b.cognitiveservices.azure.com",
-        "https://jarvis.cognitiveservices.azure.com.evil.example",
-        "https://jarvis-.cognitiveservices.azure.com",
-        "https://-jarvis.cognitiveservices.azure.com",
-        "https://jar_vis.cognitiveservices.azure.com",
-        # A Foundry project URL pasted by mistake.
-        "https://res.services.ai.azure.com/api/projects/proj",
-        # Paths, queries, fragments, credentials and ports.
-        f"{SPEECH_ENDPOINT}/speechtotext",
-        f"{SPEECH_ENDPOINT}/tts/cognitiveservices/v1",
-        f"{SPEECH_ENDPOINT}//",
-        f"{SPEECH_ENDPOINT}?api-version=1",
-        f"{SPEECH_ENDPOINT}/?",
-        f"{SPEECH_ENDPOINT}#section",
-        f"{SPEECH_ENDPOINT}/#",
-        "https://user:s3cret@jarvis-speech-test.cognitiveservices.azure.com",
-        "https://user@jarvis-speech-test.cognitiveservices.azure.com",
-        "https://jarvis-speech-test.cognitiveservices.azure.com:8443",
-        "https://jarvis-speech-test.cognitiveservices.azure.com:notaport",
+        "x" * 41,
     ],
 )
-def test_invalid_speech_endpoints_are_rejected(raw: str) -> None:
+def test_invalid_speech_regions_are_rejected(raw: str) -> None:
     with pytest.raises(ValidationError) as exc_info:
-        _foundry(speech_endpoint=raw)
+        _foundry(**{**SPEECH, "speech_region": raw})
 
-    assert "JARVIS_SPEECH_ENDPOINT" in str(exc_info.value)
+    assert "JARVIS_SPEECH_REGION must be an Azure region" in str(exc_info.value)
+
+
+def test_speech_resource_ids_are_trimmed_and_keep_their_case() -> None:
+    upper = SPEECH_RESOURCE_ID.replace("00000000-0000", "ABCDEF00-0000")
+    settings = _foundry(**{**SPEECH, "speech_resource_id": f"  {upper}\n"})
+
+    assert settings.speech_resource_id == upper
+
+
+_ACCOUNT = "/providers/Microsoft.CognitiveServices/accounts/secret-speech"
+_SUBSCRIPTION = "/subscriptions/00000000-0000-0000-0000-000000000000"
 
 
 @pytest.mark.parametrize(
     "raw",
     [
-        "https://user:s3cret@secret-speech.cognitiveservices.azure.com",
-        "http://secret-speech.cognitiveservices.azure.com",
-        "https://secret-speech.cognitiveservices.azure.com/secret-path",
-        "https://secret-speech.cognitiveservices.azure.com?s3cret=1",
-        "https://secret-speech.example.com",
+        "",
+        "   ",
+        "secret-speech",
+        "https://secret-speech.cognitiveservices.azure.com",
+        f"{_SUBSCRIPTION}/resourceGroups/rg/providers/Microsoft.Web/sites/secret-speech",
+        f"/subscriptions/not-a-guid/resourceGroups/rg{_ACCOUNT}",
+        f"{_SUBSCRIPTION}{_ACCOUNT}",
+        f"{_SUBSCRIPTION}/resourceGroups/rg{_ACCOUNT}/",
+        f"{_SUBSCRIPTION}/resourceGroups/rg{_ACCOUNT}/extra",
+        f"{_SUBSCRIPTION}/resourceGroups/rg{_ACCOUNT}#secret-token",
+        f"{_SUBSCRIPTION}/resourceGroups/r g{_ACCOUNT}",
+        f"subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg{_ACCOUNT}",
     ],
 )
-def test_speech_endpoint_errors_never_echo_the_value(raw: str) -> None:
+def test_invalid_speech_resource_ids_are_rejected_without_echo(raw: str) -> None:
     with pytest.raises(ValidationError) as exc_info:
-        _foundry(speech_endpoint=raw)
+        _foundry(**{**SPEECH, "speech_resource_id": raw})
 
     message = str(exc_info.value)
+    assert "JARVIS_SPEECH_RESOURCE_ID must be a Speech resource ID" in message
     assert "secret-speech" not in message
-    assert "s3cret" not in message
-    assert "secret-path" not in message
+    assert "secret-token" not in message
+    assert "00000000-0000" not in message
 
 
-def test_speech_endpoint_is_excluded_from_repr() -> None:
-    settings = _foundry(speech_endpoint=SPEECH_ENDPOINT)
+def test_speech_resource_id_is_excluded_from_repr() -> None:
+    settings = _foundry(**SPEECH)
 
     assert "jarvis-speech-test" not in repr(settings)
-    assert "jarvis-speech-test" not in str(settings)
+    assert "00000000-0000" not in str(settings)
+
+
+@pytest.mark.parametrize(
+    "raw", ["https://secret-speech.cognitiveservices.azure.com", "anything-left-over"]
+)
+def test_a_leftover_speech_endpoint_stops_startup_without_echo(
+    monkeypatch: pytest.MonkeyPatch, raw: str
+) -> None:
+    # The custom-domain endpoint is no longer used: never ignore it silently.
+    monkeypatch.setenv("JARVIS_SPEECH_ENDPOINT", raw)
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=None, **SPEECH)
+
+    message = str(exc_info.value)
+    assert (
+        "JARVIS_SPEECH_ENDPOINT was replaced by JARVIS_SPEECH_REGION and JARVIS_SPEECH_RESOURCE_ID"
+    ) in message
+    assert "secret-speech" not in message
+    assert "left-over" not in message
+
+
+@pytest.mark.parametrize("raw", ["", "   "])
+def test_a_blank_speech_endpoint_counts_as_unset(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    monkeypatch.setenv("JARVIS_SPEECH_ENDPOINT", raw)
+
+    settings = Settings(_env_file=None, **SPEECH)
+
+    assert settings.speech_endpoint is None
+    assert settings.speech_configured is True
 
 
 @pytest.mark.parametrize("language", ["ca-ES", "en-US", "es-ES", "fil-PH", "zh-Hans-CN"])
@@ -582,19 +616,22 @@ def test_speech_timeout_bounds(field: str, value: int, valid: bool) -> None:
             _foundry(**{field: value})
 
 
-def test_there_are_no_speech_key_region_or_identity_settings() -> None:
+def test_there_are_no_speech_key_or_identity_settings() -> None:
     names = {name for name in Settings.model_fields if name.startswith("speech_")}
 
     assert names == {
-        "speech_endpoint",
+        "speech_region",
+        "speech_resource_id",
+        "speech_endpoint",  # removed; only rejects leftover values
         "speech_recognition_languages",
         "speech_recognition_language",  # removed; only rejects leftover values
         "speech_voice",
         "speech_stt_timeout_seconds",
         "speech_tts_timeout_seconds",
     }
-    for forbidden in ("key", "secret", "region", "tenant", "subscription", "client"):
+    for forbidden in ("key", "secret", "tenant", "subscription", "client"):
         assert not [name for name in Settings.model_fields if forbidden in name], forbidden
+    assert [name for name in Settings.model_fields if "region" in name] == ["speech_region"]
 
 
 # Runs in a fresh interpreter. Every way to reach Azure is replaced with a recorder
@@ -695,7 +732,8 @@ def test_startup_and_other_endpoints_never_touch_azure(
         env["JARVIS_FOUNDRY_PROJECT_ENDPOINT"] = ENDPOINT
         env["JARVIS_FOUNDRY_MODEL"] = "startup-test-deployment"
     if speech == "configured":
-        env["JARVIS_SPEECH_ENDPOINT"] = SPEECH_ENDPOINT
+        env["JARVIS_SPEECH_REGION"] = SPEECH_REGION
+        env["JARVIS_SPEECH_RESOURCE_ID"] = SPEECH_RESOURCE_ID
 
     subprocess.run(
         [sys.executable, "-c", _STARTUP_SCRIPT, foundry, speech],

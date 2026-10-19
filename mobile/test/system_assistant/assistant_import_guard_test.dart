@@ -127,6 +127,31 @@ void main() {
     }
   });
 
+  test(
+    'the shared push-to-talk widget reaches no private or assistant code',
+    () {
+      final shared = _reachable(
+        'lib/features/voice/presentation/voice_push_to_talk.dart',
+      );
+      expect(shared.files.intersection(_forbiddenFiles), isEmpty);
+      expect(shared.packages.intersection(_forbiddenPackages), isEmpty);
+      // Generic voice code: it knows nothing about the system assistant.
+      expect(
+        shared.files.where((file) => file.startsWith('lib/system_assistant/')),
+        isEmpty,
+      );
+      expect(
+        graph.files,
+        contains('lib/features/voice/presentation/voice_push_to_talk.dart'),
+      );
+    },
+  );
+
+  test('the assistant entrypoint applies the assistant overrides', () {
+    final source = File(_entrypoint).readAsStringSync();
+    expect(source, contains('...assistantProviderOverrides'));
+  });
+
   test('no navigation package is reachable from the assistant', () {
     expect(graph.packages.intersection(_forbiddenPackages), isEmpty);
   });

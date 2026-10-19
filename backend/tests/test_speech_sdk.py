@@ -1,12 +1,10 @@
 """Contract tests for the Speech SDK adapter, with the REAL native SDK.
 
-They build real SDK objects with a fake endpoint and a fake credential but never
-start recognition, so nothing connects: the credential must receive no token
-request (the SDK needs one before any connection) and Python sockets are guarded.
+They build real SDK objects with a fake region and a fake resource-bound token but
+never start recognition or synthesis, so nothing connects; Python sockets are guarded.
 """
 
 import socket
-import time
 from typing import Any
 
 import pytest
@@ -15,22 +13,15 @@ speechsdk = pytest.importorskip(
     "azure.cognitiveservices.speech", reason="native Azure Speech SDK not loadable"
 )
 
-from azure.core.credentials import AccessToken, TokenCredential  # noqa: E402
-
 from app.integrations.speech import _sdk  # noqa: E402
 
-ENDPOINT = "https://jarvis-speech-test.cognitiveservices.azure.com"
+REGION = "swedencentral"
+AUTHORIZATION = (
+    "aad#/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg"
+    "/providers/Microsoft.CognitiveServices/accounts/jarvis-speech-test#fake-token"
+)
 PCM = bytes(range(256)) * 250  # 64,000 bytes: two full chunks
 LANGUAGES = ("ca-ES", "es-ES", "en-US", "zh-CN")
-
-
-class RecordingCredential(TokenCredential):
-    def __init__(self) -> None:
-        self.requests: list[tuple[str, ...]] = []
-
-    def get_token(self, *scopes: str, **kwargs: Any) -> AccessToken:
-        self.requests.append(scopes)
-        return AccessToken("fake-token", int(time.time()) + 3600)
 
 
 class RecordingSink:
@@ -138,14 +129,26 @@ def spies(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     return recorded
 
 
-def open_session(
-    credential: TokenCredential | None = None, languages: tuple[str, ...] = ("ca-ES",)
-) -> tuple[Any, RecordingCredential]:
-    credential = credential or RecordingCredential()
-    session = _sdk.open_recognition(
-        endpoint=ENDPOINT, credential=credential, languages=languages, pcm=PCM, sink=RecordingSink()
+def open_session(languages: tuple[str, ...] = ("ca-ES",)) -> Any:
+    return _sdk.open_recognition(
+        region=REGION,
+        authorization=AUTHORIZATION,
+        languages=languages,
+        pcm=PCM,
+        sink=RecordingSink(),
     )
-    return session, credential
+
+
+def assert_regional_entra_config(kwargs: dict[str, Any], config: Any) -> None:
+    """The configuration that works: regional endpoint, resource-bound Entra token."""
+    assert kwargs == {"auth_token": AUTHORIZATION, "region": REGION}
+    assert config.authorization_token == AUTHORIZATION
+    assert config.region == REGION
+    # Never the custom-domain endpoint, a host, a key or a credential-managed token.
+    assert config.get_property(speechsdk.PropertyId.SpeechServiceConnection_Endpoint) == ""
+    assert config.get_property(speechsdk.PropertyId.SpeechServiceConnection_Host) == ""
+    assert config.get_property(speechsdk.PropertyId.SpeechServiceConnection_Key) == ""
+    assert config.token_credential is None
 
 
 def recognizer_property(recognizer: Any, name: str) -> str:
@@ -162,7 +165,7 @@ BOTH_PATHS = pytest.mark.parametrize("languages", [("ca-ES",), LANGUAGES], ids=[
 def test_audio_format_is_explicit_16khz_16bit_mono(
     spies: dict[str, Any], languages: tuple[str, ...]
 ) -> None:
-    session, _ = open_session(languages=languages)
+    session = open_session(languages=languages)
 
     assert spies["formats"] == [
         {"samples_per_second": 16_000, "bits_per_sample": 16, "channels": 1}
@@ -174,7 +177,7 @@ def test_audio_format_is_explicit_16khz_16bit_mono(
 def test_only_the_pcm_is_written_in_chunks_then_the_stream_is_closed(
     spies: dict[str, Any], languages: tuple[str, ...]
 ) -> None:
-    session, _ = open_session(languages=languages)
+    session = open_session(languages=languages)
 
     [stream] = spies["streams"]
     assert b"".join(stream.writes) == PCM
@@ -183,33 +186,14 @@ def test_only_the_pcm_is_written_in_chunks_then_the_stream_is_closed(
     session.close()
 
 
-def test_config_uses_the_credential_the_custom_endpoint_and_the_language(
+def test_config_uses_the_region_the_resource_bound_token_and_the_language(
     spies: dict[str, Any],
 ) -> None:
-    credential = RecordingCredential()
-    session, _ = open_session(credential)
+    session = open_session()
 
     [(kwargs, config)] = spies["configs"]
-    assert kwargs == {"token_credential": credential, "endpoint": ENDPOINT + "/"}
-    assert config.token_credential is credential
+    assert_regional_entra_config(kwargs, config)
     assert config.speech_recognition_language == "ca-ES"
-    assert config.get_property(speechsdk.PropertyId.SpeechServiceConnection_Endpoint) == (
-        ENDPOINT + "/"
-    )
-    # No key or region authentication is configured.
-    assert config.get_property(speechsdk.PropertyId.SpeechServiceConnection_Key) == ""
-    assert config.get_property(speechsdk.PropertyId.SpeechServiceConnection_Region) == ""
-    session.close()
-
-
-@BOTH_PATHS
-def test_construction_requests_no_token_and_opens_no_connection(
-    spies: dict[str, Any], languages: tuple[str, ...]
-) -> None:
-    session, credential = open_session(languages=languages)
-    time.sleep(0.3)  # give any background activity a chance to show up
-
-    assert credential.requests == []
     session.close()
 
 
@@ -217,7 +201,7 @@ def test_construction_requests_no_token_and_opens_no_connection(
 def test_handlers_are_connected_and_close_disconnects_them(
     spies: dict[str, Any], languages: tuple[str, ...]
 ) -> None:
-    session, _ = open_session(languages=languages)
+    session = open_session(languages=languages)
     [recognizer] = spies["recognizers"]
     signals = [recognizer.recognized, recognizer.canceled, recognizer.session_stopped]
     assert all(signal.is_connected() for signal in signals)
@@ -232,7 +216,7 @@ def test_handlers_are_connected_and_close_disconnects_them(
 def test_one_language_is_fixed_recognition_without_identification(
     spies: dict[str, Any],
 ) -> None:
-    session, _ = open_session(languages=("es-ES",))
+    session = open_session(languages=("es-ES",))
 
     [(_, config)] = spies["configs"]
     [kwargs] = spies["recognizer_kwargs"]
@@ -250,7 +234,7 @@ def test_one_language_is_fixed_recognition_without_identification(
 def test_several_languages_are_identified_at_start_among_exactly_the_candidates(
     spies: dict[str, Any],
 ) -> None:
-    session, _ = open_session(languages=LANGUAGES)
+    session = open_session(languages=LANGUAGES)
 
     assert spies["auto_detect"] == [{"languages": ["ca-ES", "es-ES", "en-US", "zh-CN"]}]
     [kwargs] = spies["recognizer_kwargs"]
@@ -267,7 +251,7 @@ def test_several_languages_are_identified_at_start_among_exactly_the_candidates(
 
 def test_several_languages_leave_no_fixed_recognition_language(spies: dict[str, Any]) -> None:
     # The SDK silently accepts a fixed language next to identification.
-    session, _ = open_session(languages=LANGUAGES)
+    session = open_session(languages=LANGUAGES)
 
     [(_, config)] = spies["configs"]
     [recognizer] = spies["recognizers"]
@@ -276,21 +260,16 @@ def test_several_languages_leave_no_fixed_recognition_language(spies: dict[str, 
     session.close()
 
 
-def test_identification_keeps_the_entra_endpoint_and_no_key_or_region(
-    spies: dict[str, Any],
-) -> None:
-    credential = RecordingCredential()
-    session, _ = open_session(credential, languages=LANGUAGES)
+def test_identification_keeps_the_regional_entra_config(spies: dict[str, Any]) -> None:
+    session = open_session(languages=LANGUAGES)
 
     [(kwargs, config)] = spies["configs"]
-    assert kwargs == {"token_credential": credential, "endpoint": ENDPOINT + "/"}
-    assert config.get_property(speechsdk.PropertyId.SpeechServiceConnection_Key) == ""
-    assert config.get_property(speechsdk.PropertyId.SpeechServiceConnection_Region) == ""
+    assert_regional_entra_config(kwargs, config)
     session.close()
 
 
 def test_close_is_idempotent_and_never_raises(spies: dict[str, Any]) -> None:
-    session, _ = open_session()
+    session = open_session()
 
     session.close()
     session.close()
@@ -389,30 +368,24 @@ def test_guarded_callbacks_never_raise_into_the_sdk() -> None:
 # ===========================================================================================
 
 
-def open_synthesis(credential: TokenCredential | None = None) -> tuple[Any, RecordingCredential]:
-    credential = credential or RecordingCredential()
-    session = _sdk.open_synthesis(
-        endpoint=ENDPOINT, credential=credential, voice="ca-ES-AlbaNeural", text="Hola"
+def open_synthesis() -> Any:
+    return _sdk.open_synthesis(
+        region=REGION, authorization=AUTHORIZATION, voice="ca-ES-AlbaNeural", text="Hola"
     )
-    return session, credential
 
 
-def test_synthesis_config_uses_the_credential_and_the_custom_endpoint(
+def test_synthesis_config_uses_the_region_and_the_resource_bound_token(
     spies: dict[str, Any],
 ) -> None:
-    credential = RecordingCredential()
-    session, _ = open_synthesis(credential)
+    session = open_synthesis()
 
     [(kwargs, config)] = spies["configs"]
-    assert kwargs == {"token_credential": credential, "endpoint": ENDPOINT + "/"}
-    assert config.token_credential is credential
-    assert config.get_property(speechsdk.PropertyId.SpeechServiceConnection_Key) == ""
-    assert config.get_property(speechsdk.PropertyId.SpeechServiceConnection_Region) == ""
+    assert_regional_entra_config(kwargs, config)
     session.close()
 
 
 def test_synthesis_voice_and_mp3_output_format(spies: dict[str, Any]) -> None:
-    session, _ = open_synthesis()
+    session = open_synthesis()
 
     [(_, config)] = spies["configs"]
     assert config.speech_synthesis_voice_name == "ca-ES-AlbaNeural"
@@ -424,7 +397,7 @@ def test_synthesis_voice_and_mp3_output_format(spies: dict[str, Any]) -> None:
 
 
 def test_the_synthesizer_has_no_audio_output_device(spies: dict[str, Any]) -> None:
-    session, _ = open_synthesis()
+    session = open_synthesis()
 
     [(kwargs, _synthesizer)] = spies["synthesizers"]
     # Passed explicitly: the SDK default would play on the default speaker.
@@ -433,16 +406,8 @@ def test_the_synthesizer_has_no_audio_output_device(spies: dict[str, Any]) -> No
     session.close()
 
 
-def test_synthesis_construction_requests_no_token(spies: dict[str, Any]) -> None:
-    session, credential = open_synthesis()
-    time.sleep(0.3)
-
-    assert credential.requests == []
-    session.close()
-
-
 def test_synthesis_close_releases_references_and_is_idempotent(spies: dict[str, Any]) -> None:
-    session, _ = open_synthesis()
+    session = open_synthesis()
 
     session.close()
     session.close()

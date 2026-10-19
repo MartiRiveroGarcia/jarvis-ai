@@ -12,8 +12,9 @@ import 'wav.dart';
 ///
 /// UI-independent: no widgets, no BuildContext, no files.
 abstract interface class VoiceRecorder {
-  /// Asks for microphone access if needed. False when denied (including
-  /// "don't ask again", which Android reports the same way).
+  /// Asks for microphone access if needed (or only checks it, when the
+  /// recorder must never show the system dialog). False when not granted,
+  /// including "don't ask again", which Android reports the same way.
   Future<bool> ensurePermission();
 
   /// Starts capturing. [onLimitReached] is called once when the 30-second
@@ -51,12 +52,18 @@ class RecordVoiceRecorder implements VoiceRecorder {
     AudioRecorder Function()? createRecorder,
     ElapsedTime Function()? startTimer,
     this.maxDuration = VoiceAudioFormat.maxDuration,
+    this.requestPermission = true,
   }) : _createRecorder = createRecorder ?? AudioRecorder.new,
        _startTimer = startTimer ?? _startStopwatch;
 
   /// When [VoiceRecorder.start]'s onLimitReached fires, measured by a Dart
   /// Timer (monotonic, not wall-clock). The byte cap stays authoritative.
   final Duration maxDuration;
+
+  /// Whether [ensurePermission] may show Android's permission dialog. False
+  /// only checks the current grant: for surfaces that can be shown over the
+  /// lock screen, which must never prompt.
+  final bool requestPermission;
 
   /// Everything set explicitly: the plugin defaults (AAC, 44.1 kHz, stereo)
   /// must never apply.
@@ -115,7 +122,7 @@ class RecordVoiceRecorder implements VoiceRecorder {
       return false;
     }
     try {
-      return await _audioRecorder.hasPermission(request: true);
+      return await _audioRecorder.hasPermission(request: requestPermission);
     } on Object {
       return false;
     }

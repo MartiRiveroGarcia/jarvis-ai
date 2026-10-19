@@ -2,10 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app/theme.dart';
-import '../features/assistant/presentation/widgets/voice_button.dart';
 import '../features/auth/application/auth_controller.dart';
 import '../features/auth/application/auth_state.dart';
 import '../features/auth/presentation/widgets/auth_error_banner.dart';
+import '../features/voice/application/voice_conversation_state.dart';
+import '../features/voice/presentation/voice_lifecycle_bridge.dart';
+import '../features/voice/presentation/voice_messages.dart';
+import '../features/voice/presentation/voice_push_to_talk.dart';
 import 'assistant_close.dart';
 
 /// The Android system-assistant app: one compact bottom panel, chosen by the
@@ -26,6 +29,10 @@ class AssistantApp extends StatelessWidget {
       theme: buildJarvisTheme().copyWith(
         scaffoldBackgroundColor: Colors.transparent,
       ),
+      // Cancels any voice activity as soon as the panel leaves the
+      // foreground: Back, a tap outside, screen off or the session ending.
+      builder: (_, child) =>
+          VoiceLifecycleBridge(child: child ?? const SizedBox.shrink()),
       home: const AssistantGate(),
     );
   }
@@ -38,6 +45,8 @@ class AssistantGate extends ConsumerWidget {
 
   static const signedOutMessage = 'Sign in to Jarvis to use the assistant';
   static const unreachableMessage = "Can't reach Jarvis";
+  static const microphoneAccessMessage =
+      'Open Jarvis to allow microphone access';
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -170,33 +179,31 @@ class _Header extends StatelessWidget {
   }
 }
 
-/// Placeholder for the voice session: the push-to-talk control is shown but
-/// disabled, so nothing can be recorded or sent yet.
+/// Push-to-talk inside the panel: the same control and semantics as the
+/// normal app, with this engine's own controller, recorder and player. Nothing
+/// is recorded until the user presses the control.
 class _AssistantVoice extends StatelessWidget {
   const _AssistantVoice();
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Column(
-      key: const Key('assistant-voice'),
-      children: [
-        const VoiceButton(
-          visual: VoiceButtonVisual.idle,
-          semanticLabel: 'Talk to Jarvis',
-          size: 104,
-        ),
-        const SizedBox(height: 12),
-        Text(
-          'Hold to talk',
-          key: const Key('assistant-status'),
-          textAlign: TextAlign.center,
-          style: theme.textTheme.titleMedium,
-        ),
-      ],
+    return const VoicePushToTalk(
+      key: Key('assistant-voice'),
+      buttonSize: 104,
+      statusGap: 12,
+      failureMessage: assistantVoiceFailureMessage,
     );
   }
 }
+
+/// The assistant never asks for the microphone itself, so a missing grant
+/// points to the normal app; every other failure reads as in the normal app.
+String assistantVoiceFailureMessage(VoiceConversationFailure failure) =>
+    switch (failure) {
+      VoiceConversationFailure.permissionDenied =>
+        AssistantGate.microphoneAccessMessage,
+      _ => voiceFailureMessage(failure),
+    };
 
 class _Message extends StatelessWidget {
   const _Message({super.key, required this.message, this.onRetry});
