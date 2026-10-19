@@ -15,7 +15,6 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
 import azure.cognitiveservices.speech as speechsdk
-from azure.core.credentials import TokenCredential
 
 SAMPLE_RATE = 16_000
 BITS_PER_SAMPLE = 16
@@ -58,15 +57,16 @@ class SynthesisSession(Protocol):
     def close(self) -> None: ...
 
 
-def _speech_config(endpoint: str, credential: TokenCredential) -> Any:
-    # Microsoft Entra ID: the SDK requests and refreshes tokens from the credential.
-    return speechsdk.SpeechConfig(token_credential=credential, endpoint=endpoint + "/")
+def _speech_config(region: str, authorization: str) -> Any:
+    # Microsoft Entra ID on the regional endpoint: [authorization] is a resource-bound
+    # token ("aad#<resource-id>#<token>"), fresh for this one connection.
+    return speechsdk.SpeechConfig(auth_token=authorization, region=region)
 
 
 def open_recognition(
     *,
-    endpoint: str,
-    credential: TokenCredential,
+    region: str,
+    authorization: str,
     languages: Sequence[str],
     pcm: bytes,
     sink: RecognitionSink,
@@ -80,7 +80,7 @@ def open_recognition(
         samples_per_second=SAMPLE_RATE, bits_per_sample=BITS_PER_SAMPLE, channels=CHANNELS
     )
     stream = speechsdk.audio.PushAudioInputStream(stream_format=stream_format)
-    config = _speech_config(endpoint, credential)
+    config = _speech_config(region, authorization)
     audio_config = speechsdk.audio.AudioConfig(stream=stream)
     if len(languages) == 1:
         config.speech_recognition_language = languages[0]
@@ -111,13 +111,13 @@ def open_recognition(
 
 def open_synthesis(
     *,
-    endpoint: str,
-    credential: TokenCredential,
+    region: str,
+    authorization: str,
     voice: str,
     text: str,
 ) -> SynthesisSession:
     """Prepare plain-text synthesis of [text]. Connects nothing until synthesize()."""
-    config = _speech_config(endpoint, credential)
+    config = _speech_config(region, authorization)
     config.speech_synthesis_voice_name = voice
     config.set_speech_synthesis_output_format(
         speechsdk.SpeechSynthesisOutputFormat.Audio24Khz48KBitRateMonoMp3

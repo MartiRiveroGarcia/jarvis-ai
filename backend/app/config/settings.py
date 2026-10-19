@@ -20,10 +20,15 @@ Environment = Literal["development", "test", "production"]
 _FOUNDRY_PROJECT_PATH = re.compile(r"/api/projects/(?!\.{1,2}$)[A-Za-z0-9._~-]+")
 # Azure deployment names: letters, digits, dots, hyphens and underscores.
 _FOUNDRY_DEPLOYMENT_NAME = re.compile(r"[A-Za-z0-9._-]{1,64}")
-# An Azure Speech custom-domain host: exactly one DNS label before the suffix.
-# Microsoft Entra ID authentication requires the custom domain.
-_SPEECH_CUSTOM_DOMAIN_HOST = re.compile(
-    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.cognitiveservices\.azure\.com"
+# An Azure region name such as swedencentral: the regional Speech service host.
+_SPEECH_REGION = re.compile(r"[a-z][a-z0-9]{1,39}")
+# The Azure resource ID of a Speech (Cognitive Services) account. Microsoft Entra ID
+# authentication on the regional endpoint binds each token to this resource.
+_SPEECH_RESOURCE_ID = re.compile(
+    r"/subscriptions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    r"/resourceGroups/[A-Za-z0-9_.()-]{1,90}"
+    r"/providers/Microsoft\.CognitiveServices/accounts/[A-Za-z0-9][A-Za-z0-9_.-]{1,63}",
+    re.IGNORECASE,
 )
 # Speech locales such as ca-ES, en-US or zh-Hans-CN.
 _SPEECH_LOCALE = re.compile(r"[a-z]{2,3}(?:-[A-Z][a-z]{3})?-[A-Z]{2}")
@@ -74,11 +79,15 @@ class Settings(BaseSettings):
     foundry_timeout_seconds: int = Field(default=25, ge=1, le=120)
     foundry_max_output_tokens: int = Field(default=2000, ge=16, le=16384)
 
-    # Azure AI Speech (optional): speech-to-text and text-to-speech. Unset endpoint
-    # means Speech is disabled. Microsoft Entra ID only, through the resource's
-    # custom domain; there is deliberately no key or region setting.
-    # Not a credential, but kept out of repr so it does not end up in logs.
-    speech_endpoint: str | None = Field(default=None, repr=False)
+    # Azure AI Speech (optional): speech-to-text and text-to-speech. Unset means Speech
+    # is disabled; region and resource ID are set together. Microsoft Entra ID only:
+    # the regional endpoint with a token bound to the resource. No key setting.
+    speech_region: str | None = None
+    # Not a credential, but it names the subscription: kept out of repr and logs.
+    speech_resource_id: str | None = Field(default=None, repr=False)
+    # Removed: the custom-domain endpoint. Declared only so that a leftover value
+    # stops startup instead of being silently ignored.
+    speech_endpoint: str | None = Field(default=None, exclude=True, repr=False)
     # Spoken languages to recognise, in order. One locale: fixed-language recognition.
     # Two to four: the service identifies which one is spoken at the start of each
     # recording. Set as JSON, e.g. JARVIS_SPEECH_RECOGNITION_LANGUAGES='["ca-ES"]'.
@@ -139,33 +148,39 @@ class Settings(BaseSettings):
             )
         return name
 
-    @field_validator("speech_endpoint")
+    @field_validator("speech_region")
     @classmethod
-    def validate_speech_endpoint(cls, value: str | None) -> str | None:
-        """Accept only an https Speech custom-domain endpoint; never echo the value."""
+    def validate_speech_region(cls, value: str | None) -> str | None:
         if value is None:
             return None
-        message = "JARVIS_SPEECH_ENDPOINT"
-        try:
-            parts = urlsplit(value.strip())
-            port = parts.port
-        except ValueError:
-            raise ValueError(f"{message} is not a valid URL") from None
-        if parts.scheme.lower() != "https":
-            raise ValueError(f"{message} must be an absolute https URL")
-        if parts.username is not None or parts.password is not None:
-            raise ValueError(f"{message} must not contain credentials")
-        if parts.query or parts.fragment or "?" in value or "#" in value:
-            raise ValueError(f"{message} must not contain a query or fragment")
-        if parts.path not in ("", "/"):
-            raise ValueError(f"{message} must not contain a path")
-        host = (parts.hostname or "").lower()
-        if not _SPEECH_CUSTOM_DOMAIN_HOST.fullmatch(host) or port not in (None, 443):
+        region = value.strip().lower()
+        if not _SPEECH_REGION.fullmatch(region):
+            raise ValueError("JARVIS_SPEECH_REGION must be an Azure region such as swedencentral")
+        return region
+
+    @field_validator("speech_resource_id")
+    @classmethod
+    def validate_speech_resource_id(cls, value: str | None) -> str | None:
+        """Accept only a Speech account resource ID; never echo the value."""
+        if value is None:
+            return None
+        resource_id = value.strip()
+        if not _SPEECH_RESOURCE_ID.fullmatch(resource_id):
             raise ValueError(
-                f"{message} must be a custom-domain endpoint "
-                "(https://<name>.cognitiveservices.azure.com)"
+                "JARVIS_SPEECH_RESOURCE_ID must be a Speech resource ID (/subscriptions/<id>"
+                "/resourceGroups/<group>/providers/Microsoft.CognitiveServices/accounts/<name>)"
             )
-        return f"https://{host}"
+        return resource_id
+
+    @field_validator("speech_endpoint")
+    @classmethod
+    def reject_removed_speech_endpoint(cls, value: str | None) -> None:
+        # Blank counts as unset, so an environment override can clear a leftover.
+        if value is not None and value.strip():
+            raise ValueError(
+                "JARVIS_SPEECH_ENDPOINT was replaced by JARVIS_SPEECH_REGION and "
+                "JARVIS_SPEECH_RESOURCE_ID"
+            )
 
     @field_validator("speech_recognition_languages")
     @classmethod
@@ -208,6 +223,14 @@ class Settings(BaseSettings):
             )
         return self
 
+    @model_validator(mode="after")
+    def _speech_settings_are_complete(self) -> Self:
+        if (self.speech_region is None) != (self.speech_resource_id is None):
+            raise ValueError(
+                "JARVIS_SPEECH_REGION and JARVIS_SPEECH_RESOURCE_ID must be set together"
+            )
+        return self
+
     @property
     def session_ttl(self) -> timedelta:
         return timedelta(days=self.session_ttl_days)
@@ -218,7 +241,7 @@ class Settings(BaseSettings):
 
     @property
     def speech_configured(self) -> bool:
-        return self.speech_endpoint is not None
+        return self.speech_region is not None and self.speech_resource_id is not None
 
 
 @lru_cache

@@ -15,4 +15,13 @@
     <style name="NormalTheme" parent="@android:style/Theme.Light.NoTitleBar">
         <item name="android:windowBackground">?android:colorBackground</item>
     </style>
+    <!-- AssistantActivity only: a translucent, transparent full window, so just
+         the Flutter assistant panel is drawn over the app or lock screen below.
+         FlutterActivity requires windowIsTranslucent for a transparent
+         background. Used for its whole lifetime (no NormalTheme switch). -->
+    <style name="AssistantTheme" parent="@android:style/Theme.Translucent.NoTitleBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:backgroundDimEnabled">false</item>
+    </style>
 </resources>

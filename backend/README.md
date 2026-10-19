@@ -312,7 +312,13 @@ endpoint also needs Foundry.
 - Your identity (or the deployed managed identity) needs the **Cognitive Services
   Speech User** role on the resource.
 - Authentication uses the same `DefaultAzureCredential` as Foundry (`az login`
-  locally). There is deliberately **no key or region setting**.
+  locally). There is deliberately **no key setting**.
+- The backend connects to the resource's **regional** Speech endpoint. Before each
+  connection it requests a fresh Entra token and binds it to the resource
+  (`aad#<resource-id>#<token>`). The custom-domain endpoint is not used for
+  speech-to-text or text-to-speech: Azure rejects the Speech SDK's connection to it.
+- Find the resource ID with
+  `az cognitiveservices account show -n <speech-resource> -g <group> --query id -o tsv`.
 
 ### Settings
 
@@ -320,16 +326,21 @@ Invalid values are rejected at startup with a message that never repeats the val
 
 | Variable                              | Default                             | Description                                                          |
 | ------------------------------------- | ----------------------------------- | -------------------------------------------------------------------- |
-| `JARVIS_SPEECH_ENDPOINT`              | unset                               | Custom-domain endpoint, `https://<name>.cognitiveservices.azure.com` |
+| `JARVIS_SPEECH_REGION`                | unset                               | Region of the Speech resource, e.g. `swedencentral`                  |
+| `JARVIS_SPEECH_RESOURCE_ID`           | unset                               | Speech resource ID; set together with the region                     |
 | `JARVIS_SPEECH_RECOGNITION_LANGUAGES` | `["ca-ES","es-ES","en-US","zh-CN"]` | Spoken languages: JSON list of 1–4 locales, one per language         |
 | `JARVIS_SPEECH_VOICE`                 | `ca-ES-AlbaNeural`                  | Text-to-speech voice                                                 |
 | `JARVIS_SPEECH_STT_TIMEOUT_SECONDS`   | `45`                                | Speech-to-text limit per request in seconds (1–120)                  |
 | `JARVIS_SPEECH_TTS_TIMEOUT_SECONDS`   | `20`                                | Text-to-speech limit per request in seconds (1–120)                  |
 
 ```bash
-# backend/.env (placeholder; use your own value)
-JARVIS_SPEECH_ENDPOINT=https://<custom-domain>.cognitiveservices.azure.com
+# backend/.env (placeholders; use your own values)
+JARVIS_SPEECH_REGION=<region>
+JARVIS_SPEECH_RESOURCE_ID=/subscriptions/<subscription-id>/resourceGroups/<group>/providers/Microsoft.CognitiveServices/accounts/<speech-resource>
 ```
+
+The former `JARVIS_SPEECH_ENDPOINT` is no longer accepted: a leftover value stops
+startup with a message naming its replacements.
 
 ### Languages
 
