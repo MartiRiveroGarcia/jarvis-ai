@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -8,6 +9,7 @@ import 'package:jarvis/features/assistant/presentation/widgets/voice_button.dart
 import 'package:jarvis/features/auth/application/auth_controller.dart';
 import 'package:jarvis/features/auth/domain/user.dart';
 import 'package:jarvis/features/voice/application/voice_conversation_controller.dart';
+import 'package:jarvis/features/voice/data/voice_api.dart';
 import 'package:jarvis/features/voice/audio/voice_player.dart';
 import 'package:jarvis/features/voice/audio/voice_recorder.dart';
 import 'package:jarvis/system_assistant/assistant_app.dart';
@@ -245,27 +247,24 @@ void main() {
       expect(h.closes, isEmpty);
     });
 
-    testWidgets(
-      'holding and double-tapping the disabled control keep it open',
-      (tester) async {
-        final h = await _pump(tester);
-        final control = tester.getCenter(find.byKey(const Key('voice-button')));
+    testWidgets('holding and double-tapping the control keep the panel open', (
+      tester,
+    ) async {
+      final h = await _pump(tester);
+      final control = tester.getCenter(find.byKey(const Key('voice-button')));
 
-        final hold = await tester.startGesture(control);
-        await tester.pump(const Duration(seconds: 2));
-        await hold.up();
-        await tester.pump();
-        await tester.tapAt(control);
-        await tester.pump(const Duration(milliseconds: 80));
-        await tester.tapAt(control);
-        await tester.pump(const Duration(milliseconds: 500));
+      final hold = await tester.startGesture(control);
+      await tester.pump(const Duration(seconds: 2));
+      await hold.up();
+      await tester.pump();
+      await tester.tapAt(control);
+      await tester.pump(const Duration(milliseconds: 80));
+      await tester.tapAt(control);
+      await tester.pump(const Duration(milliseconds: 500));
 
-        expect(h.closes, isEmpty);
-        expect(_key('assistant-voice'), findsOneWidget);
-        expect(h.recorder.calls, isEmpty);
-        expect(h.voiceApi.requests, isEmpty);
-      },
-    );
+      expect(h.closes, isEmpty);
+      expect(_key('assistant-voice'), findsOneWidget);
+    });
 
     testWidgets('taps on empty panel space keep it open', (tester) async {
       final h = await _pump(tester);
@@ -313,34 +312,213 @@ void main() {
     }
   });
 
-  group('no voice action yet', () {
-    testWidgets('the push-to-talk control is disabled', (tester) async {
-      final semantics = tester.ensureSemantics();
-      await _pump(tester);
+  group('push-to-talk in the panel', () {
+    Finder control() => find.byKey(const Key('voice-button'));
+    String status(WidgetTester tester) =>
+        tester.widget<Text>(find.byKey(const Key('voice-status'))).data!;
 
-      expect(
-        tester.getSemantics(find.bySemanticsLabel('Talk to Jarvis')),
-        isSemantics(isButton: true, isEnabled: false, hasTapAction: false),
-      );
-      semantics.dispose();
+    testWidgets('opening the panel starts nothing on its own', (tester) async {
+      final h = await _pump(tester);
+      await tester.pump(const Duration(seconds: 3));
+
+      expect(status(tester), 'Hold to talk');
+      expect(h.recorder.calls, isEmpty); // not even a permission check
+      expect(h.player.calls, isEmpty);
+      expect(h.voiceApi.requests, isEmpty);
     });
 
-    testWidgets('pressing it records nothing and sends nothing', (
+    testWidgets('hold records; release sends, plays the reply, returns idle', (
       tester,
     ) async {
       final h = await _pump(tester);
 
-      final gesture = await tester.startGesture(
-        tester.getCenter(find.byKey(const Key('voice-button'))),
-      );
-      await tester.pump(const Duration(milliseconds: 500));
+      final gesture = await tester.startGesture(tester.getCenter(control()));
+      await tester.pump();
+      expect(h.recorder.calls, ['ensurePermission', 'start']);
+      expect(status(tester), 'Listening…');
+
       await gesture.up();
       await tester.pump();
+      await tester.pump();
+      expect(h.recorder.count('stop'), 1);
+      expect(h.voiceApi.requests, [h.recorder.wav]);
+      expect(h.player.played, [h.voiceApi.reply]);
+      expect(status(tester), 'Jarvis is speaking…');
 
-      expect(h.recorder.calls, isEmpty);
-      expect(h.player.calls, isEmpty);
-      expect(h.voiceApi.requests, isEmpty);
-      expect(h.container.exists(voiceConversationControllerProvider), isFalse);
+      h.player.complete();
+      await tester.pump();
+      await tester.pump();
+      expect(status(tester), 'Hold to talk');
+      expect(h.voiceApi.requests, hasLength(1));
+      expect(h.closes, isEmpty);
     });
+
+    testWidgets('pressing while speaking interrupts, as in the normal app', (
+      tester,
+    ) async {
+      final h = await _pump(tester);
+      await tester.tap(control());
+      await tester.pump();
+      await tester.pump();
+      expect(status(tester), 'Jarvis is speaking…');
+
+      final gesture = await tester.startGesture(tester.getCenter(control()));
+      await tester.pump();
+      await tester.pump();
+
+      expect(h.player.count('stop'), 1);
+      expect(h.recorder.count('start'), 2);
+      expect(status(tester), 'Listening…');
+      await gesture.up();
+    });
+
+    testWidgets('presses while thinking are ignored, as in the normal app', (
+      tester,
+    ) async {
+      final h = await _pump(tester);
+      h.voiceApi.gate = Completer<Uint8List>();
+      await tester.tap(control());
+      await tester.pump();
+      await tester.pump();
+      expect(status(tester), 'Jarvis is thinking…');
+
+      await tester.tap(control());
+      await tester.pump();
+
+      expect(h.recorder.count('start'), 1);
+      expect(h.voiceApi.requests, hasLength(1));
+    });
+
+    Future<void> leaveForeground(WidgetTester tester) async {
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      await tester.pump();
+      await tester.pump();
+    }
+
+    testWidgets('leaving the foreground while recording discards it', (
+      tester,
+    ) async {
+      final h = await _pump(tester);
+      final gesture = await tester.startGesture(tester.getCenter(control()));
+      await tester.pump();
+      expect(status(tester), 'Listening…');
+
+      await leaveForeground(tester);
+
+      expect(h.recorder.count('cancel'), 1);
+      expect(h.recorder.count('stop'), 0);
+      expect(h.voiceApi.requests, isEmpty);
+      await gesture.up();
+      await tester.pump();
+      expect(h.voiceApi.requests, isEmpty);
+    });
+
+    testWidgets('leaving while thinking ignores the late reply', (
+      tester,
+    ) async {
+      final h = await _pump(tester);
+      final reply = h.voiceApi.gate = Completer<Uint8List>();
+      await tester.tap(control());
+      await tester.pump();
+      await tester.pump();
+      expect(status(tester), 'Jarvis is thinking…');
+
+      await leaveForeground(tester);
+      reply.complete(h.voiceApi.reply);
+      await tester.pump();
+      await tester.pump();
+
+      expect(h.player.played, isEmpty); // no late playback
+      expect(status(tester), 'Hold to talk');
+    });
+
+    testWidgets('leaving while speaking stops the reply', (tester) async {
+      final h = await _pump(tester);
+      await tester.tap(control());
+      await tester.pump();
+      await tester.pump();
+      expect(status(tester), 'Jarvis is speaking…');
+
+      await leaveForeground(tester);
+
+      expect(h.player.count('stop'), 1);
+      expect(h.player.isPlaying, isFalse);
+      expect(status(tester), 'Hold to talk');
+    });
+
+    testWidgets('without microphone access it records nothing and says why', (
+      tester,
+    ) async {
+      final h = await _pump(tester);
+      h.recorder.permission = false;
+
+      await tester.tap(control());
+      await tester.pump();
+      await tester.pump();
+
+      expect(h.recorder.calls, ['ensurePermission']); // never start
+      expect(h.voiceApi.requests, isEmpty);
+      expect(
+        tester.widget<Text>(find.byKey(const Key('voice-failure'))).data,
+        'Open Jarvis to allow microphone access',
+      );
+      expect(h.closes, isEmpty);
+    });
+
+    testWidgets('a voice failure shows the normal fixed message', (
+      tester,
+    ) async {
+      final h = await _pump(tester);
+      h.voiceApi.error = const VoiceException(VoiceFailure.network);
+
+      await tester.tap(control());
+      await tester.pump();
+      await tester.pump();
+
+      expect(
+        tester.widget<Text>(find.byKey(const Key('voice-failure'))).data,
+        "Couldn't reach Jarvis. Check your connection and try again.",
+      );
+      expect(h.player.played, isEmpty);
+    });
+
+    testWidgets('an expired session during voice shows the signed-out panel', (
+      tester,
+    ) async {
+      final h = await _pump(tester);
+      h.voiceApi.error = const VoiceException(VoiceFailure.sessionExpired);
+
+      await tester.tap(control());
+      await tester.pump();
+      await tester.pump();
+      await tester.pump();
+
+      expect(find.text(AssistantGate.signedOutMessage), findsOneWidget);
+      expect(_key('assistant-voice'), findsNothing);
+      expect(h.store.session, isNull);
+      expect(h.player.played, isEmpty);
+      expect(h.closes, isEmpty); // no navigation, the panel stays
+      _expectNothingPrivate(tester);
+    });
+
+    for (final (name, store, api) in [
+      ('signed out', InMemoryTokenStore(), FakeAuthApi()),
+      (
+        'unreachable',
+        InMemoryTokenStore(testSession()),
+        FakeAuthApi()..onMe = () => Future.error(networkError('/api/auth/me')),
+      ),
+    ]) {
+      testWidgets('$name: no voice controller exists', (tester) async {
+        final h = await _pump(tester, store: store, api: api);
+
+        expect(
+          h.container.exists(voiceConversationControllerProvider),
+          isFalse,
+        );
+        expect(h.recorder.calls, isEmpty);
+      });
+    }
   });
 }
