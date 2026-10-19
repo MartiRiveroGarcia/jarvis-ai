@@ -37,6 +37,27 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- The Android digital-assistant surface (long-press Power). It runs the
+             assistant-only Flutter entrypoint, never the normal app, and is the
+             only ACTION_ASSIST handler. Exported because the system starts it.
+             Its own task, kept out of Recents; it ends its session (and task)
+             when it stops. It sets show-when-locked itself, at runtime. Its
+             theme is translucent: only the assistant panel is visible. -->
+        <activity
+            android:name=".AssistantActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:taskAffinity="io.github.martiriverogarcia.jarvis.assistant"
+            android:theme="@style/AssistantTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.ASSIST"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+            </intent-filter>
+        </activity>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

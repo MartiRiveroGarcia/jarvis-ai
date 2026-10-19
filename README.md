@@ -7,8 +7,9 @@ decides which tools or specialised agents are needed to complete a request — f
 example searching the web, managing Trello cards or updating an Excel workbook.
 Push-to-talk voice conversations are implemented: you can speak Catalan, Spanish,
 English or Simplified Chinese, and Jarvis normally replies in Catalan, using Azure AI
-Speech and Microsoft Foundry. AI agents, tools and Android assistant integration are
-not implemented yet; see the roadmap.
+Speech and Microsoft Foundry. Jarvis can also be Android's default digital assistant,
+so long-pressing Power opens it over the current app or the lock screen. The next major
+milestone is agent orchestration and tool calling; see the roadmap.
 
 Jarvis is built incrementally, sprint by sprint, as a learning and portfolio project
 alongside the Microsoft AI-103 certification.
@@ -56,8 +57,25 @@ Mobile (Flutter, Android-first):
       Simplified Chinese at the start of each recording; Jarvis normally replies in
       Catalan, verified on a physical Android device in all four languages
 
-Not implemented yet: AI agents, tools, RAG and Android assistant integration — see the
-roadmap. Next: Sprint 03, Android assistant integration.
+**Sprint 03 — Android assistant integration (complete).**
+
+- [x] Jarvis is selectable as Android's default digital assistant (`ROLE_ASSISTANT`):
+      long-press Power opens it through a dedicated `AssistantActivity` that handles
+      `ACTION_ASSIST`
+- [x] A separate Flutter entrypoint and engine for the assistant: a translucent bottom
+      panel over the current app or the lock screen, without the normal app's
+      screens, navigation or account details
+- [x] Push-to-talk in the panel, with the same voice flow as the app; nothing is
+      recorded until the user presses the button
+- [x] Speech now connects to the regional Azure AI Speech endpoint with a
+      resource-bound Microsoft Entra ID token, after Azure began rejecting the SDK's
+      connection to the custom-domain endpoint
+- [x] Final acceptance on a physical Pixel: unlocked and truly locked voice exchanges,
+      dismissal in every voice state, revoked microphone permission and a normal-app
+      voice regression
+
+Not implemented yet: AI agents, tools and RAG — see the roadmap. Next: Sprint 04, agent
+core and tool calling.
 
 ## Architecture
 
@@ -153,14 +171,10 @@ The Flutter app is deliberately minimal and voice-first:
   the assistant and shows the reply. It is kept to test the text path on its own,
   separately from speech.
 
-Future Android integration (planned for Sprint 03, not implemented):
-
-- Making Jarvis selectable as Android's default digital assistant, so it can be
-  invoked like the system assistant — for example by long-pressing the power button.
-- The exact official Android integration mechanism will be validated on a physical
-  Pixel before the production architecture is chosen; the first spike evaluates an
-  `ACTION_ASSIST` activity.
-- This may require a small native Kotlin layer alongside the Flutter code.
+- An Android system assistant surface: once Jarvis is the default digital assistant,
+  long-pressing Power opens a compact push-to-talk panel over the current app or the
+  lock screen. A small native `AssistantActivity` (Kotlin) hosts it. See
+  [mobile/README.md](mobile/README.md#android-system-assistant).
 
 ## Tech stack
 
@@ -185,18 +199,17 @@ Future Android integration (planned for Sprint 03, not implemented):
 | ------ | ------------------------------------------------------------------------------------------------------- | -------- |
 | 01     | Foundation, authentication API and Flutter client                                                       | Complete |
 | 02     | Basic AI assistant: Foundry text, Azure AI Speech, push-to-talk, multilingual input and Catalan replies | Complete |
-| 03     | Android assistant integration: default digital assistant, long-press Power → Jarvis                     | Next     |
-| 04     | Agent core and tool calling                                                                             | Planned  |
+| 03     | Android assistant integration: default digital assistant, long-press Power → Jarvis                     | Complete |
+| 04     | Agent core and tool calling                                                                             | Next     |
 | 05     | Memory: persistent conversations and context                                                            | Planned  |
 | 06     | Trello integration                                                                                      | Planned  |
 | 07     | Excel / Microsoft Graph integration                                                                     | Planned  |
 | 08     | Retrieval (RAG), using Azure AI Search where appropriate                                                | Planned  |
 | 09     | Multi-agent orchestration                                                                               | Planned  |
 
-- **Sprint 03** starts with a physical Pixel spike: does Jarvis appear as a digital
-  assistant app, can it be selected, does long-press Power invoke it (from a cold and a
-  running app), and how does it behave on a locked phone. The production invocation
-  architecture, and how a hands-free conversation ends, are designed after that spike.
+- **Sprint 03** chose a dedicated `AssistantActivity` after physical Pixel spikes,
+  keeping push-to-talk only. Hands-free conversation and a native invocation bridge
+  were left out until a feature needs them.
 - **Sprint 04** evaluates Microsoft Foundry Agents, including whether Jarvis's
   persistent instructions should move from `AssistantService` into a versioned Foundry
   Agent definition, and the tool architecture and orchestration.

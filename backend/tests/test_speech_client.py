@@ -17,10 +17,12 @@ from contextlib import nullcontext
 from typing import Any
 
 import pytest
+from azure.core.credentials import AccessToken
 
 from app.config.settings import BACKEND_DIR, Settings
+from app.integrations import speech as speech_package
 from app.integrations.speech import client as client_module
-from app.integrations.speech.client import AzureSpeechClient, _Collector
+from app.integrations.speech.client import ENTRA_SCOPE, AzureSpeechClient, _Collector
 from app.integrations.speech.errors import (
     SpeechBadResponseError,
     SpeechError,
@@ -33,7 +35,11 @@ from app.integrations.speech.errors import (
     SpeechUnavailableError,
 )
 
-ENDPOINT = "https://secret-speech-host.cognitiveservices.azure.com"
+REGION = "swedencentral"
+RESOURCE_ID = (
+    "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg"
+    "/providers/Microsoft.CognitiveServices/accounts/secret-speech-account"
+)
 LANGUAGES = ("ca-ES", "es-ES", "en-US", "zh-CN")
 VOICE = "ca-ES-AlbaNeural"
 SESSION_ID = "0123456789abcdef0123456789abcdef"
@@ -160,13 +166,36 @@ class FakeSdk:
         return session
 
 
-class FakeCredentialFactory:
+class FakeCredential:
+    """Hands out a new token on every request, like a credential near expiry."""
+
     def __init__(self, error: Exception | None = None) -> None:
         self.error = error
-        self.calls = 0
-        self.credential = object()
+        self.requests: list[tuple[str, ...]] = []
+        self.lock = threading.Lock()
 
-    def __call__(self) -> object:
+    def get_token(self, *scopes: str, **kwargs: Any) -> AccessToken:
+        with self.lock:
+            self.requests.append(scopes)
+            count = len(self.requests)
+        if self.error is not None:
+            raise self.error
+        return AccessToken(f"secret-token-{count}", int(time.time()) + 3600)
+
+
+def authorization(token_number: int) -> str:
+    return f"aad#{RESOURCE_ID}#secret-token-{token_number}"
+
+
+class FakeCredentialFactory:
+    def __init__(
+        self, error: Exception | None = None, token_error: Exception | None = None
+    ) -> None:
+        self.error = error
+        self.calls = 0
+        self.credential = FakeCredential(token_error)
+
+    def __call__(self) -> FakeCredential:
         self.calls += 1
         if self.error is not None:
             raise self.error
@@ -184,7 +213,8 @@ def make_client(
     sdk = sdk or FakeSdk()
     credentials = credentials or FakeCredentialFactory()
     client = AzureSpeechClient(
-        endpoint=ENDPOINT + "/",
+        region=REGION,
+        resource_id=RESOURCE_ID,
         recognition_languages=LANGUAGES,
         stt_timeout_seconds=timeout,
         voice=VOICE,
@@ -261,16 +291,18 @@ def test_no_speech_carries_the_session_id() -> None:
 # --- request ----------------------------------------------------------------------------
 
 
-def test_the_adapter_receives_pcm_language_endpoint_and_credential() -> None:
+def test_the_adapter_receives_pcm_language_region_and_resource_bound_token() -> None:
     client, sdk, credentials = make_client()
 
     client.transcribe(make_wav(16_000, fill=b"\xab\xcd"))
 
     [opened] = sdk.opened
+    assert set(opened) == {"region", "authorization", "languages", "pcm", "sink"}
     assert opened["pcm"] == b"\xab\xcd" * 16_000  # PCM only, no RIFF header
     assert opened["languages"] == LANGUAGES
-    assert opened["endpoint"] == ENDPOINT
-    assert opened["credential"] is credentials.credential
+    assert opened["region"] == REGION
+    assert opened["authorization"] == authorization(1)
+    assert credentials.credential.requests == [(ENTRA_SCOPE,)]
 
 
 def test_invalid_audio_never_touches_the_credential_or_sdk() -> None:
@@ -280,6 +312,7 @@ def test_invalid_audio_never_touches_the_credential_or_sdk() -> None:
         client.transcribe(b"not a wav")
 
     assert credentials.calls == 0
+    assert credentials.credential.requests == []
     assert sdk.opened == []
 
 
@@ -499,7 +532,7 @@ def test_only_the_first_cancellation_is_kept() -> None:
 # --- configuration and credential ------------------------------------------------------------
 
 
-def test_from_settings_requires_an_endpoint() -> None:
+def test_from_settings_requires_region_and_resource_id() -> None:
     with pytest.raises(SpeechNotConfiguredError):
         AzureSpeechClient.from_settings(Settings(_env_file=None))
 
@@ -507,14 +540,16 @@ def test_from_settings_requires_an_endpoint() -> None:
 def test_from_settings_uses_the_speech_settings() -> None:
     settings = Settings(
         _env_file=None,
-        speech_endpoint="https://jarvis-speech-test.cognitiveservices.azure.com",
+        speech_region="swedencentral",
+        speech_resource_id=RESOURCE_ID,
         speech_recognition_languages=("es-ES",),
         speech_stt_timeout_seconds=12,
     )
 
     client = AzureSpeechClient.from_settings(settings)
 
-    assert client._endpoint == "https://jarvis-speech-test.cognitiveservices.azure.com"
+    assert client._region == "swedencentral"
+    assert client._resource_id == RESOURCE_ID
     assert client._recognition_languages == ("es-ES",)
     assert client._stt_timeout_seconds == 12
     assert client._voice == "ca-ES-AlbaNeural"
@@ -523,9 +558,7 @@ def test_from_settings_uses_the_speech_settings() -> None:
 
 
 def test_from_settings_defaults_to_the_four_candidate_languages() -> None:
-    settings = Settings(
-        _env_file=None, speech_endpoint="https://jarvis-speech-test.cognitiveservices.azure.com"
-    )
+    settings = Settings(_env_file=None, speech_region=REGION, speech_resource_id=RESOURCE_ID)
 
     client = AzureSpeechClient.from_settings(settings)
 
@@ -572,10 +605,71 @@ def test_a_failing_credential_is_a_credential_error() -> None:
     assert sdk.opened == []
 
 
+@pytest.mark.parametrize("operation", ["transcribe", "synthesize"])
+def test_a_failing_token_request_is_a_credential_error(operation: str) -> None:
+    synthesis = FakeSynthesisSdk()
+    credentials = FakeCredentialFactory(token_error=ValueError("secret azure identity text"))
+    client, sdk, _ = make_client(synthesis=synthesis, credentials=credentials)
+
+    with pytest.raises(SpeechUnavailableError) as exc_info:
+        if operation == "transcribe":
+            client.transcribe(make_wav())
+        else:
+            client.synthesize("Hola")
+
+    assert exc_info.value.reason == "credential"
+    assert exc_info.value.__cause__ is None
+    assert "secret" not in str(exc_info.value)
+    assert sdk.opened == []
+    assert synthesis.opened == []
+
+
+def test_every_connection_gets_a_fresh_token_from_the_shared_credential() -> None:
+    synthesis = FakeSynthesisSdk()
+    client, sdk, credentials = make_client(synthesis=synthesis)
+
+    client.transcribe(make_wav())
+    client.synthesize("Hola")
+    client.transcribe(make_wav())
+
+    assert credentials.calls == 1
+    assert credentials.credential.requests == [(ENTRA_SCOPE,)] * 3
+    assert [opened["authorization"] for opened in sdk.opened] == [
+        authorization(1),
+        authorization(3),
+    ]
+    assert [opened["authorization"] for opened in synthesis.opened] == [authorization(2)]
+
+
+def test_tokens_are_never_logged_or_exposed(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.DEBUG)
+    synthesis = FakeSynthesisSdk(canceled("BadRequest"))
+    client, _, _ = make_client(FakeSdk([cancel("BadRequest"), STOPPED]), synthesis=synthesis)
+
+    errors = []
+    for call in (lambda: client.transcribe(make_wav()), lambda: client.synthesize("Hola")):
+        with pytest.raises(SpeechUnavailableError) as exc_info:
+            call()
+        errors.append(exc_info.value)
+
+    logged = caplog.text + "".join(str(record.args) for record in caplog.records)
+    rendered = [repr(client), logged] + [
+        text for error in errors for text in (str(error), repr(error), repr(vars(error)))
+    ]
+    for text in rendered:
+        assert "secret-token" not in text
+        assert "aad#" not in text
+        assert "secret-speech-account" not in text
+
+
 def test_a_native_sdk_that_cannot_load_is_an_sdk_error(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(sys.modules, "app.integrations.speech._sdk", None)  # import fails
+    # An earlier import leaves the adapter on its package, where `from ... import`
+    # would still find it: remove it too, so nothing can reach the real SDK.
+    monkeypatch.delattr(speech_package, "_sdk", raising=False)
     client = AzureSpeechClient(
-        endpoint=ENDPOINT,
+        region=REGION,
+        resource_id=RESOURCE_ID,
         recognition_languages=LANGUAGES,
         stt_timeout_seconds=5,
         voice=VOICE,
@@ -598,7 +692,7 @@ def test_constructing_and_importing_load_nothing() -> None:
         "from app.config.settings import Settings\n"
         "from app.integrations.speech import AzureSpeechClient\n"
         "client = AzureSpeechClient.from_settings(Settings(_env_file=None,"
-        " speech_endpoint='https://jarvis-speech-test.cognitiveservices.azure.com'))\n"
+        f" speech_region='{REGION}', speech_resource_id='{RESOURCE_ID}'))\n"
         "assert created == [], created\n"
         "assert not [m for m in sys.modules if m.startswith('azure.cognitiveservices')]\n"
         "assert 'app.integrations.speech._sdk' not in sys.modules\n"
@@ -638,6 +732,8 @@ def test_concurrent_calls_do_not_share_state() -> None:
     assert errors == []
     assert results == {n: f"frames-{n} end" for n in frame_counts}
     assert credentials.calls == 1
+    assert len(credentials.credential.requests) == len(frame_counts)
+    assert len({opened["authorization"] for opened in sdk.opened}) == len(frame_counts)
     assert len(sdk.sessions) == len(frame_counts)
     assert len({id(session.sink) for session in sdk.sessions}) == len(frame_counts)
 
@@ -647,7 +743,7 @@ def test_concurrent_calls_do_not_share_state() -> None:
 
 def test_errors_and_client_never_contain_sensitive_values() -> None:
     client, _, _ = make_client()
-    assert "secret-speech-host" not in repr(client)
+    assert "secret-speech-account" not in repr(client)
 
     scripts = [
         [phrase(SECRET_TRANSCRIPT), cancel("Forbidden"), STOPPED],
@@ -657,7 +753,8 @@ def test_errors_and_client_never_contain_sensitive_values() -> None:
     for script in scripts:
         error = failure(FakeSdk(script), timeout=0.2)
         for text in (str(error), repr(error), repr(vars(error))):
-            assert "secret-speech-host" not in text
+            assert "secret-speech-account" not in text
+            assert "secret-token" not in text
             assert SECRET_TRANSCRIPT not in text
             assert "\x01\x02" not in text
 
@@ -757,16 +854,17 @@ def synthesis_failure(
 # --- input ------------------------------------------------------------------------------------
 
 
-def test_text_is_trimmed_and_sent_with_voice_endpoint_and_credential() -> None:
+def test_text_is_trimmed_and_sent_with_voice_region_and_resource_bound_token() -> None:
     synthesis = FakeSynthesisSdk()
     client, _, credentials = make_client(synthesis=synthesis)
 
     client.synthesize("  Bon dia, sóc Jarvis.\n ")
 
     [opened] = synthesis.opened
+    assert credentials.credential.requests == [(ENTRA_SCOPE,)]
     assert opened == {
-        "endpoint": ENDPOINT,
-        "credential": credentials.credential,
+        "region": REGION,
+        "authorization": authorization(1),
         "voice": VOICE,
         "text": "Bon dia, sóc Jarvis.",
     }
@@ -1012,7 +1110,10 @@ def test_speech_to_text_and_text_to_speech_share_one_credential(order: str) -> N
         client.transcribe(make_wav())
 
     assert credentials.calls == 1
-    assert recognition.opened[0]["credential"] is synthesis.opened[0]["credential"]
+    # The same fixed path for both: regional endpoint, resource-bound token.
+    [stt], [tts] = recognition.opened, synthesis.opened
+    assert stt["region"] == tts["region"] == REGION
+    assert {stt["authorization"], tts["authorization"]} == {authorization(1), authorization(2)}
 
 
 # --- concurrency ----------------------------------------------------------------------------
@@ -1053,7 +1154,7 @@ def test_concurrent_syntheses_are_isolated() -> None:
 # --- nothing sensitive --------------------------------------------------------------------------
 
 
-def test_synthesis_errors_never_contain_text_audio_or_endpoint() -> None:
+def test_synthesis_errors_never_contain_text_audio_resource_or_token() -> None:
     cases = [
         FakeSynthesisSdk(canceled("Forbidden")),
         FakeSynthesisSdk(completed(b"")),
@@ -1064,7 +1165,8 @@ def test_synthesis_errors_never_contain_text_audio_or_endpoint() -> None:
         error = synthesis_failure(synthesis, SECRET_TEXT, tts_timeout=0.2)
         for text in (str(error), repr(error), repr(vars(error))):
             assert SECRET_TEXT not in text
-            assert "secret-speech-host" not in text
+            assert "secret-speech-account" not in text
+            assert "secret-token" not in text
             assert "\\xff\\xf3" not in text
         for session in synthesis.sessions:
             session.release.set()

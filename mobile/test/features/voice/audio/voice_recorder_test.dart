@@ -197,6 +197,22 @@ void main() {
       expect(await recorder.ensurePermission(), isFalse);
     });
 
+    test('requests the permission by default', () {
+      expect(RecordVoiceRecorder().requestPermission, isTrue);
+    });
+
+    test('a check-only recorder never asks for the permission', () async {
+      final recorder = RecordVoiceRecorder(requestPermission: false);
+
+      expect(await recorder.ensurePermission(), isTrue);
+      platform.permission = false;
+      expect(await recorder.ensurePermission(), isFalse);
+      expect(platform.calls.where((c) => c.startsWith('hasPermission')), [
+        'hasPermission(request: false)',
+        'hasPermission(request: false)',
+      ]);
+    });
+
     test('a platform failure counts as not granted', () async {
       platform.throwOnPermission = true;
       final (:recorder, elapsed: _, limits: _) = setUpRecorder();
